@@ -51,6 +51,15 @@ OVERHANG_THRESHOLD = -0.707   # cos(135°) — face normals below this Z are ove
 SUPPORT_DENSITY    = 0.15     # support infill density (15% — Prusa default)
 SUPPORT_Z_DISTANCE = 0.2      # mm gap between support top and part (one layer)
 
+# Bed size for validation (Prusa MK4)
+BED_SIZE_X = 250  # mm
+BED_SIZE_Y = 220  # mm
+BED_SIZE_Z = 270  # mm
+
+# Issue thresholds
+MIN_VOLUME_CM3 = 1.0  # Unreasonably small if volume < 1 cm³
+MIN_DIMENSION_MM = 5.0  # Unreasonably small if any dimension < 5mm
+
 
 def parse_stl(filepath):
     """
@@ -320,6 +329,17 @@ def analyze_stl(filepath):
         geo = compute_geometry(triangles)
         est = estimate_print(geo, with_supports=True)
 
+        # Detect issues
+        issues = []
+        
+        if geo["size_x"] > BED_SIZE_X or geo["size_y"] > BED_SIZE_Y or geo["size_z"] > BED_SIZE_Z:
+            issues.append("Too large for print bed")
+        volume_cm3 = geo["volume_mm3"] / 1000.0
+        if volume_cm3 < MIN_VOLUME_CM3:
+            issues.append("Unreasonably small volume")
+        if geo["size_x"] < MIN_DIMENSION_MM or geo["size_y"] < MIN_DIMENSION_MM or geo["size_z"] < MIN_DIMENSION_MM:
+            issues.append("Unreasonably small dimensions")
+
         return {
             "triangle_count":     len(triangles),
             "size_x_mm":          geo["size_x"],
@@ -337,6 +357,8 @@ def analyze_stl(filepath):
             "filament_mass_g":    est["filament_mass_g"],
             "time_minutes":       est["time_minutes"],
             "time_formatted":     est["time_formatted"],
+            # Issues
+            "issues":             issues,
             # Config snapshot
             "config": {
                 "layer_height_mm":    LAYER_HEIGHT,
@@ -396,6 +418,7 @@ def analyze_stl_with_prusaslicer(filepath, prusaslicer_path="prusaslicer", confi
             "filament_mass_g":    estimates.get("filament_mass_g"),
             "time_minutes":       estimates.get("time_minutes"),
             "time_formatted":     estimates.get("time_formatted"),
+            "issues":             [],  # PrusaSlicer doesn't provide geometry validation
             "config": {
                 "method":             "PrusaSlicer G-code generation",
                 "layer_height_mm":    LAYER_HEIGHT,

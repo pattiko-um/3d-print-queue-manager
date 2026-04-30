@@ -10,21 +10,24 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, g
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).parent
-STL_DIR = BASE_DIR / "stl_files"          # shared directory for STL files
 DB_PATH = BASE_DIR / "printqueue.db"
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
+PRINT_ROOT_DIR = Path(os.getenv('PRINT_ROOT_DIR'))
+PRUSA_SLICER_PATH = os.getenv('PRUSA_SLICER_PATH')
 
-STL_DIR.mkdir(exist_ok=True)
+PRINT_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), template_folder=str(TEMPLATES_DIR))
-
 
 # ---------------------------------------------------------------------------
 # Database
@@ -51,15 +54,18 @@ def init_db():
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS tickets (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            title       TEXT NOT NULL,
-            requester   TEXT DEFAULT '',
-            notes       TEXT DEFAULT '',
-            status      TEXT NOT NULL DEFAULT 'todo'
-                        CHECK(status IN ('todo','in_progress','done')),
-            priority    INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
+            id                  INTEGER PRIMARY KEY,
+            title               TEXT NOT NULL,
+            requester           TEXT DEFAULT '',
+            username            TEXT DEFAULT '',
+            external_ticket_id  INTEGER,
+            ticket_url          TEXT,
+            notes               TEXT DEFAULT '',
+            status              TEXT NOT NULL DEFAULT 'todo'
+                                CHECK(status IN ('todo','in_progress','done')),
+            priority            INTEGER NOT NULL DEFAULT 0,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS prints (
@@ -75,6 +81,9 @@ def init_db():
             size_z_mm           REAL,
             volume_mm3          REAL,
             triangle_count      INTEGER,
+            has_overhangs       INTEGER DEFAULT 0,
+            overhang_area_mm2   REAL,
+            support_vol_mm3     REAL,
             -- Estimates
             layer_count         INTEGER,
             filament_length_m   REAL,
@@ -83,6 +92,8 @@ def init_db():
             time_formatted      TEXT,
             -- Config snapshot (JSON)
             config_json         TEXT,
+            -- Issues (JSON array)
+            issues_json         TEXT,
             -- Errors
             parse_error         TEXT,
             -- Meta
@@ -115,7 +126,10 @@ def ticket_with_prints(db, ticket_id):
     for p in prints:
         if p.get("config_json"):
             p["config"] = json.loads(p["config_json"])
+        if p.get("issues_json"):
+            p["issues"] = json.loads(p["issues_json"])
         p.pop("config_json", None)
+        p.pop("issues_json", None)
     ticket["prints"] = prints
     ticket["print_count"] = len(prints)
     ticket["total_time_minutes"] = sum(p.get("time_minutes") or 0 for p in prints)
@@ -127,16 +141,54 @@ def scan_and_analyze_stl(filepath_str):
     """Import estimator lazily so the server starts even if numpy is missing."""
     try:
         from stl_estimator import analyze_stl_with_prusaslicer, analyze_stl
-        # import shutil
 
-        # Check if PrusaSlicer is available in PATH or via the default macOS app bundle.
-        prusaslicer_path = "/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
-
-        if prusaslicer_path:
-            return analyze_stl_with_prusaslicer(filepath_str, prusaslicer_path)
-        return analyze_stl(filepath_str)
+        return analyze_stl_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH)
     except ImportError as e:
         return {"error": f"stl_estimator unavailable: {e}"}
+
+
+def build_ticket_url(ticket_id):
+    """Build TeamDynamix URL for a ticket."""
+    return f"https://teamdynamix.umich.edu/TDNext/Apps/46/Tickets/TicketDet.aspx?TicketID={ticket_id}"
+
+
+def scan_print_root_directory():
+    """
+    Scan PRINT_ROOT_DIR for subdirectories matching pattern: <ticket_id> - <username>
+    Returns list of dicts with ticket_id, username, and stl_files.
+    """
+    import re
+    results = []
+
+    if not PRINT_ROOT_DIR.exists():
+        return results
+    
+    for subdir in PRINT_ROOT_DIR.iterdir():
+        if not subdir.is_dir():
+            continue
+        
+        # Parse directory name: "<ticket_id> - <username>"
+        # More flexible pattern to handle varying spacing
+        match = re.match(r"^(\d+)\s*-\s*(.+)$", subdir.name.strip())
+
+        if not match:
+            continue
+        
+        ticket_id = int(match.group(1))
+        username = match.group(2).strip()
+        
+        # Find all STL and STP files in this subdirectory
+        stl_files = sorted([f for f in subdir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp')])
+        
+        if stl_files:
+            results.append({
+                "ticket_id": ticket_id,
+                "username": username,
+                "directory": str(subdir),
+                "stl_files": [str(f) for f in stl_files],
+            })
+    
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +225,16 @@ def create_ticket():
         return jsonify({"error": "title is required"}), 400
     ts = now_iso()
     db = get_db()
+    
+    # If external_ticket_id is provided, use it; otherwise use auto-increment
+    external_ticket_id = data.get("external_ticket_id")
+    ticket_url = build_ticket_url(external_ticket_id) if external_ticket_id else None
+    
     cur = db.execute(
-        "INSERT INTO tickets (title, requester, notes, status, priority, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (data["title"], data.get("requester", ""), data.get("notes", ""),
+        "INSERT INTO tickets (title, requester, username, external_ticket_id, ticket_url, notes, status, priority, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (data["title"], data.get("requester", ""), data.get("username", ""),
+         external_ticket_id, ticket_url, data.get("notes", ""),
          data.get("status", "todo"), data.get("priority", 0), ts, ts)
     )
     db.commit()
@@ -221,18 +279,104 @@ def delete_ticket(tid):
 # Routes — STL directory scanning
 # ---------------------------------------------------------------------------
 
-@app.route("/api/stl-files", methods=["GET"])
-def list_stl_files():
-    """List all .stl files in the shared STL_DIR."""
-    files = []
-    for f in sorted(STL_DIR.iterdir()):
-        if f.suffix.lower() == ".stl":
-            files.append({
-                "filename": f.name,
-                "filepath": str(f),
-                "size_bytes": f.stat().st_size,
-            })
-    return jsonify(files)
+@app.route("/api/import-from-directory", methods=["POST"])
+def import_from_directory():
+    """
+    Scan PRINT_ROOT_DIR and create/link tickets with prints.
+    Returns a summary of created/updated tickets.
+    """
+    db = get_db()
+    scanned = scan_print_root_directory()
+    result = {
+        "created_tickets": 0,
+        "updated_tickets": 0,
+        "added_prints": 0,
+        "errors": [],
+        "tickets": [],
+        "files_processed": [],  # List of files with status
+    }
+    
+    for item in scanned:
+        ticket_id = item["ticket_id"]
+        username = item["username"]
+        stl_files = item["stl_files"]
+        ts = now_iso()
+        
+        # Check if ticket already exists
+        existing = db.execute("SELECT id FROM tickets WHERE external_ticket_id=?", (ticket_id,)).fetchone()
+        
+        if existing:
+            ticket_row_id = existing["id"]
+            result["updated_tickets"] += 1
+        else:
+            # Create new ticket
+            title = f"Print Ticket {ticket_id}"
+            ticket_url = build_ticket_url(ticket_id)
+            cur = db.execute(
+                "INSERT INTO tickets (id, title, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (ticket_id, title, username, ticket_id, ticket_url, "todo", ts, ts)
+            )
+            db.commit()
+            ticket_row_id = ticket_id
+            result["created_tickets"] += 1
+        
+        # Add all STL files as prints
+        for stl_path in stl_files:
+            result["files_processed"].append({"filename": Path(stl_path).name, "status": "processing", "path": stl_path})
+            
+            # Check if print already exists
+            existing_print = db.execute(
+                "SELECT id FROM prints WHERE ticket_id=? AND filepath=?",
+                (ticket_row_id, stl_path)
+            ).fetchone()
+            
+            if existing_print:
+                result["files_processed"][-1]["status"] = "skipped"
+                continue  # Skip if already added
+            
+            # Analyze STL
+            analysis = scan_and_analyze_stl(stl_path)
+            error = analysis.get("error")
+            filename = Path(stl_path).name
+            
+            db.execute(
+                """INSERT INTO prints
+                    (ticket_id, filename, filepath, status,
+                     size_x_mm, size_y_mm, size_z_mm, volume_mm3, triangle_count,
+                     has_overhangs, overhang_area_mm2, support_vol_mm3,
+                     layer_count, filament_length_m, filament_mass_g,
+                     time_minutes, time_formatted, config_json, issues_json, parse_error,
+                     created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ticket_row_id, filename, stl_path, "todo",
+                    analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
+                    analysis.get("volume_mm3"), analysis.get("triangle_count"),
+                    analysis.get("has_overhangs"), analysis.get("overhang_area_mm2"), analysis.get("support_vol_mm3"),
+                    analysis.get("layer_count"), analysis.get("filament_length_m"),
+                    analysis.get("filament_mass_g"), analysis.get("time_minutes"),
+                    analysis.get("time_formatted"),
+                    json.dumps(analysis.get("config")) if analysis.get("config") else None,
+                    json.dumps(analysis.get("issues")) if analysis.get("issues") else None,
+                    error,
+                    ts, ts,
+                ),
+            )
+            result["added_prints"] += 1
+            result["files_processed"][-1]["status"] = "completed" if not error else "error"
+            
+            if error:
+                result["errors"].append({"file": filename, "error": error})
+        
+        # Update ticket's updated_at
+        db.execute("UPDATE tickets SET updated_at=? WHERE id=?", (ts, ticket_row_id))
+        db.commit()
+        
+        # Fetch full ticket with prints
+        result["tickets"].append(ticket_with_prints(db, ticket_row_id))
+    
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +386,8 @@ def list_stl_files():
 @app.route("/api/tickets/<int:tid>/prints", methods=["POST"])
 def add_print(tid):
     """
-    Add a print to a ticket by referencing an STL filename already in stl_files/.
-    Body: { "filename": "part.stl" }
+    Add a print to a ticket by filepath.
+    Body: { "filepath": "/Volumes/Scratch/3D Print Test/123 - user/part.stl" }
     """
     db = get_db()
     ticket = db.execute("SELECT id FROM tickets WHERE id=?", (tid,)).fetchone()
@@ -251,34 +395,39 @@ def add_print(tid):
         return jsonify({"error": "ticket not found"}), 404
 
     data = request.json or {}
-    filename = data.get("filename", "").strip()
-    if not filename:
-        return jsonify({"error": "filename is required"}), 400
+    filepath = data.get("filepath", "").strip()
+    if not filepath:
+        return jsonify({"error": "filepath is required"}), 400
 
-    filepath = STL_DIR / filename
-    if not filepath.exists():
-        return jsonify({"error": f"file not found in stl_files/: {filename}"}), 404
+    filepath_obj = Path(filepath)
+    if not filepath_obj.exists():
+        return jsonify({"error": f"file not found: {filepath}"}), 404
+    
     # Analyze STL
-    result = scan_and_analyze_stl(str(filepath))
+    result = scan_and_analyze_stl(filepath)
     error = result.get("error")
     ts = now_iso()
+    filename = filepath_obj.name
 
     cur = db.execute(
         """INSERT INTO prints
             (ticket_id, filename, filepath, status,
              size_x_mm, size_y_mm, size_z_mm, volume_mm3, triangle_count,
+             has_overhangs, overhang_area_mm2, support_vol_mm3,
              layer_count, filament_length_m, filament_mass_g,
-             time_minutes, time_formatted, config_json, parse_error,
+             time_minutes, time_formatted, config_json, issues_json, parse_error,
              created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            tid, filename, str(filepath), "todo",
+            tid, filename, filepath, "todo",
             result.get("size_x_mm"), result.get("size_y_mm"), result.get("size_z_mm"),
             result.get("volume_mm3"), result.get("triangle_count"),
+            result.get("has_overhangs"), result.get("overhang_area_mm2"), result.get("support_vol_mm3"),
             result.get("layer_count"), result.get("filament_length_m"),
             result.get("filament_mass_g"), result.get("time_minutes"),
             result.get("time_formatted"),
             json.dumps(result.get("config")) if result.get("config") else None,
+            json.dumps(result.get("issues")) if result.get("issues") else None,
             error,
             ts, ts,
         ),
@@ -333,7 +482,7 @@ def reanalyze_print(pid):
     db.execute("""UPDATE prints SET
         size_x_mm=?, size_y_mm=?, size_z_mm=?, volume_mm3=?, triangle_count=?,
         layer_count=?, filament_length_m=?, filament_mass_g=?,
-        time_minutes=?, time_formatted=?, config_json=?, parse_error=?, updated_at=?
+        time_minutes=?, time_formatted=?, config_json=?, issues_json=?, parse_error=?, updated_at=?
         WHERE id=?""",
         (
             result.get("size_x_mm"), result.get("size_y_mm"), result.get("size_z_mm"),
@@ -342,6 +491,7 @@ def reanalyze_print(pid):
             result.get("filament_mass_g"), result.get("time_minutes"),
             result.get("time_formatted"),
             json.dumps(result.get("config")) if result.get("config") else None,
+            json.dumps(result.get("issues")) if result.get("issues") else None,
             error, ts, pid,
         ),
     )
@@ -377,5 +527,4 @@ def stats():
 if __name__ == "__main__":
     init_db()
     print("\n🖨️  PrintQueue running at http://localhost:5000")
-    print(f"📁  STL files directory: {STL_DIR.resolve()}\n")
     app.run(debug=True, port=5000)
