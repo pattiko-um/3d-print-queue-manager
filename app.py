@@ -6,6 +6,7 @@ Flask + SQLite backend
 import os
 import json
 import sqlite3
+import shutil
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, g
@@ -125,7 +126,14 @@ def ticket_with_prints(db, ticket_id):
 def scan_and_analyze_stl(filepath_str):
     """Import estimator lazily so the server starts even if numpy is missing."""
     try:
-        from stl_estimator import analyze_stl
+        from stl_estimator import analyze_stl_with_prusaslicer, analyze_stl
+        # import shutil
+
+        # Check if PrusaSlicer is available in PATH or via the default macOS app bundle.
+        prusaslicer_path = "/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
+
+        if prusaslicer_path:
+            return analyze_stl_with_prusaslicer(filepath_str, prusaslicer_path)
         return analyze_stl(filepath_str)
     except ImportError as e:
         return {"error": f"stl_estimator unavailable: {e}"}
@@ -250,7 +258,6 @@ def add_print(tid):
     filepath = STL_DIR / filename
     if not filepath.exists():
         return jsonify({"error": f"file not found in stl_files/: {filename}"}), 404
-
     # Analyze STL
     result = scan_and_analyze_stl(str(filepath))
     error = result.get("error")
