@@ -237,6 +237,9 @@ function renderDetail(ticket) {
 
   pane.innerHTML = `
     <div class="detail-header">
+      <div class="detail-header-top">
+        <button class="btn btn-sm btn-ghost btn-back" onclick="closeTicketDetail()">← Back</button>
+      </div>
       <div class="detail-title-area">
         <div class="detail-ticket-id">TICKET #${String(ticket.id).padStart(4,'0')}</div>
         <div class="detail-title">${esc(ticket.title)}</div>
@@ -255,7 +258,6 @@ function renderDetail(ticket) {
         </div>
       </div>
       <div class="detail-actions">
-        <button class="btn btn-sm btn-ghost btn-back" onclick="closeTicketDetail()">← Back</button>
         <button class="btn btn-sm" onclick="openEditTicketModal(${ticket.id})">Edit</button>
         <button class="btn btn-sm btn-ghost btn-danger" onclick="deleteTicket(${ticket.id})">Delete</button>
         ${ticket.status !== 'delivered' ? `<button class="btn btn-sm btn-primary" onclick="deliverTicket(${ticket.id})">Deliver</button>` : ''}

@@ -12,18 +12,27 @@ from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, g, Response, stream_with_context
 from dotenv import load_dotenv
 
-load_dotenv() 
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
+def get_env_path(name):
+    raw = os.getenv(name, "") or ""
+    raw = raw.strip()
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+    raw = os.path.expanduser(os.path.expandvars(raw))
+    raw = os.path.normpath(raw)
+    return Path(raw)
+
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "printqueue.db"
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
-PRINT_ROOT_DIR = Path(os.getenv('PRINT_ROOT_DIR'))
-PRUSA_SLICER_PATH = os.getenv('PRUSA_SLICER_PATH')
+PRINT_ROOT_DIR = get_env_path('PRINT_ROOT_DIR')
+PRUSA_SLICER_PATH = str(get_env_path('PRUSA_SLICER_PATH')) if os.getenv('PRUSA_SLICER_PATH') else None
 
 PRINT_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
