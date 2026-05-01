@@ -9,7 +9,7 @@ import sqlite3
 import shutil
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, request, jsonify, send_from_directory, g
+from flask import Flask, request, jsonify, send_from_directory, g, Response, stream_with_context
 from dotenv import load_dotenv
 
 load_dotenv() 
@@ -374,100 +374,116 @@ def delete_ticket(tid):
 def import_from_directory():
     """
     Scan PRINT_ROOT_DIR and create/link tickets with prints.
-    Returns a summary of created/updated tickets.
+    Returns a streaming summary of created/updated tickets.
     """
-    db = get_db()
     scanned = scan_print_root_directory()
-    result = {
-        "created_tickets": 0,
-        "updated_tickets": 0,
-        "added_prints": 0,
-        "errors": [],
-        "tickets": [],
-        "files_processed": [],  # List of files with status
-    }
-    
-    for item in scanned:
-        ticket_id = item["ticket_id"]
-        username = item["username"]
-        stl_files = item["stl_files"]
-        ts = now_iso()
-        
-        # Check if ticket already exists
-        existing = db.execute("SELECT id FROM tickets WHERE external_ticket_id=?", (ticket_id,)).fetchone()
-        
-        if existing:
-            ticket_row_id = existing["id"]
-            result["updated_tickets"] += 1
-        else:
-            # Create new ticket
-            title = f"Print Ticket {ticket_id}"
-            ticket_url = build_ticket_url(ticket_id)
-            cur = db.execute(
-                "INSERT INTO tickets (id, title, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (ticket_id, title, username, ticket_id, ticket_url, "todo", ts, ts)
-            )
-            db.commit()
-            ticket_row_id = ticket_id
-            result["created_tickets"] += 1
-        
-        # Add all STL files as prints
-        for stl_path in stl_files:
-            result["files_processed"].append({"filename": Path(stl_path).name, "status": "processing", "path": stl_path})
-            
-            # Check if print already exists
-            existing_print = db.execute(
-                "SELECT id FROM prints WHERE ticket_id=? AND filepath=?",
-                (ticket_row_id, stl_path)
+
+    def emit(obj):
+        return json.dumps(obj) + "\n"
+
+    def generate():
+        db = get_db()
+        result = {
+            "created_tickets": 0,
+            "updated_tickets": 0,
+            "added_prints": 0,
+            "errors": [],
+            "tickets": [],
+            "files_processed": [],
+        }
+
+        yield emit({"type": "start", "message": "Scanning directories..."})
+
+        for item in scanned:
+            ticket_id = item["ticket_id"]
+            username = item["username"]
+            stl_files = item["stl_files"]
+            ts = now_iso()
+
+            yield emit({"type": "ticket", "ticket_id": ticket_id})
+
+            existing = db.execute(
+                "SELECT id, requester FROM tickets WHERE external_ticket_id=?",
+                (ticket_id,)
             ).fetchone()
-            
-            if existing_print:
-                result["files_processed"][-1]["status"] = "skipped"
-                continue  # Skip if already added
-            
-            # Analyze STL
-            analysis = scan_and_analyze_stl(stl_path)
-            error = analysis.get("error")
-            filename = Path(stl_path).name
-            
-            db.execute(
-                """INSERT INTO prints
-                    (ticket_id, filename, filepath, status,
-                     size_x_mm, size_y_mm, size_z_mm, volume_mm3, triangle_count,
-                     has_overhangs, overhang_area_mm2, support_vol_mm3,
-                     layer_count, filament_length_m, filament_mass_g,
-                     time_minutes, time_formatted, config_json, issues_json, parse_error,
-                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    ticket_row_id, filename, stl_path, "todo",
-                    analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
-                    analysis.get("volume_mm3"), analysis.get("triangle_count"),
-                    analysis.get("has_overhangs"), analysis.get("overhang_area_mm2"), analysis.get("support_vol_mm3"),
-                    analysis.get("layer_count"), analysis.get("filament_length_m"),
-                    analysis.get("filament_mass_g"), analysis.get("time_minutes"),
-                    analysis.get("time_formatted"),
-                    json.dumps(analysis.get("config")) if analysis.get("config") else None,
-                    json.dumps(analysis.get("issues")) if analysis.get("issues") else None,
-                    error,
-                    ts, ts,
-                ),
-            )
-            result["added_prints"] += 1
-            result["files_processed"][-1]["status"] = "completed" if not error else "error"
-            
-            if error:
-                result["errors"].append({"file": filename, "error": error})
-        
-        # Update ticket's updated_at
-        db.execute("UPDATE tickets SET updated_at=? WHERE id=?", (ts, ticket_row_id))
-        db.commit()
-        
-        # Fetch full ticket with prints
-        result["tickets"].append(ticket_with_prints(db, ticket_row_id))
-    
-    return jsonify(result)
+
+            if existing:
+                ticket_row_id = existing["id"]
+                result["updated_tickets"] += 1
+                if not existing["requester"] and username:
+                    db.execute(
+                        "UPDATE tickets SET requester=?, username=?, updated_at=? WHERE id=?",
+                        (username, username, ts, ticket_row_id)
+                    )
+                    db.commit()
+            else:
+                title = f"TDX #{ticket_id} - {username}" if username else f"TDX #{ticket_id}"
+                ticket_url = build_ticket_url(ticket_id)
+                db.execute(
+                    "INSERT INTO tickets (id, title, requester, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (ticket_id, title, username, username, ticket_id, ticket_url, "todo", ts, ts)
+                )
+                db.commit()
+                ticket_row_id = ticket_id
+                result["created_tickets"] += 1
+
+            for stl_path in stl_files:
+                filename = Path(stl_path).name
+                result["files_processed"].append({"filename": filename, "status": "processing", "path": stl_path, "ticket_id": ticket_id})
+                yield emit({"type": "file", "ticket_id": ticket_id, "filename": filename, "status": "processing"})
+
+                existing_print = db.execute(
+                    "SELECT id FROM prints WHERE ticket_id=? AND filepath=?",
+                    (ticket_row_id, stl_path)
+                ).fetchone()
+
+                if existing_print:
+                    result["files_processed"][-1]["status"] = "skipped"
+                    yield emit({"type": "file", "ticket_id": ticket_id, "filename": filename, "status": "skipped"})
+                    continue
+
+                analysis = scan_and_analyze_stl(stl_path)
+                error = analysis.get("error")
+
+                db.execute(
+                    """INSERT INTO prints
+                        (ticket_id, filename, filepath, status,
+                         size_x_mm, size_y_mm, size_z_mm, volume_mm3, triangle_count,
+                         has_overhangs, overhang_area_mm2, support_vol_mm3,
+                         layer_count, filament_length_m, filament_mass_g,
+                         time_minutes, time_formatted, config_json, issues_json, parse_error,
+                         created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        ticket_row_id, filename, stl_path, "todo",
+                        analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
+                        analysis.get("volume_mm3"), analysis.get("triangle_count"),
+                        analysis.get("has_overhangs"), analysis.get("overhang_area_mm2"), analysis.get("support_vol_mm3"),
+                        analysis.get("layer_count"), analysis.get("filament_length_m"),
+                        analysis.get("filament_mass_g"), analysis.get("time_minutes"),
+                        analysis.get("time_formatted"),
+                        json.dumps(analysis.get("config")) if analysis.get("config") else None,
+                        json.dumps(analysis.get("issues")) if analysis.get("issues") else None,
+                        error,
+                        ts, ts,
+                    ),
+                )
+                db.commit()
+                result["added_prints"] += 1
+                result["files_processed"][-1]["status"] = "completed" if not error else "error"
+                yield emit({"type": "file", "ticket_id": ticket_id, "filename": filename, "status": result["files_processed"][-1]["status"]})
+
+                if error:
+                    result["errors"].append({"file": filename, "error": error})
+
+            db.execute("UPDATE tickets SET updated_at=? WHERE id=?", (ts, ticket_row_id))
+            db.commit()
+            result["tickets"].append(ticket_with_prints(db, ticket_row_id))
+
+        yield emit({"type": "summary", "summary": result})
+
+    return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
 
 
 # ---------------------------------------------------------------------------

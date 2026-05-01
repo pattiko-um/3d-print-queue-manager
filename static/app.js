@@ -717,7 +717,7 @@ async function rescanDirectory() {
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '⏳ Scanning…';
-  
+
   showModal(`
     <div class="modal">
       <div class="modal-header">
@@ -729,40 +729,117 @@ async function rescanDirectory() {
       </div>
     </div>
   `);
-  
+
+  const progressDiv = document.getElementById('importProgress');
+  const filesDiv = document.getElementById('importFiles');
+  let currentTicketId = null;
+  let summary = null;
+  const importedByTicket = {};
+  const ticketTitles = {};
+
+  function renderImportedSummary() {
+    const ticketIds = Object.keys(importedByTicket);
+    if (!ticketIds.length) {
+      filesDiv.innerHTML = '<div style="font-size: 12px; color: var(--text3);">No new prints were imported.</div>';
+      return;
+    }
+
+    filesDiv.innerHTML = ticketIds.map(ticketId => {
+      const ticket = importedByTicket[ticketId];
+      const title = ticketTitles[ticketId] || `Ticket #${ticketId}`;
+      return `
+        <div style="margin-bottom: 12px;">
+          <div style="font-size: 12px; font-weight: 600; margin-bottom: 4px;">${esc(title)} (${ticketId})</div>
+          <div style="font-size: 11px; color: var(--text3);">Imported prints:</div>
+          <ul style="margin: 6px 0 0 16px; padding: 0; list-style: disc; color: var(--text);">
+            ${ticket.files.map(f => `<li>${esc(f)}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+    }).join('');
+  }
+
   try {
-    const res = await api('/import-from-directory', { method: 'POST', body: {} });
-    
-    const filesDiv = document.getElementById('importFiles');
-    if (res.files_processed && res.files_processed.length > 0) {
-      filesDiv.innerHTML = '<div style="font-size: 12px; color: var(--text3); margin-bottom: 8px;">Files processed:</div>' +
-        res.files_processed.map((f, i) => {
-          const statusIcon = f.status === 'completed' ? '✅' : f.status === 'error' ? '❌' : f.status === 'skipped' ? '⏭️' : '⏳';
-          return `<div style="font-size: 11px; margin-bottom: 4px;">${i+1}. ${statusIcon} ${f.filename} (${f.status})</div>`;
-        }).join('');
+    const res = await fetch('/api/import-from-directory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.body) throw new Error('No response body from import endpoint');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.type === 'start') {
+          progressDiv.innerHTML = esc(msg.message);
+          continue;
+        }
+        if (msg.type === 'ticket') {
+          currentTicketId = msg.ticket_id;
+          progressDiv.innerHTML = `Importing ticket <strong>#${msg.ticket_id}</strong>...`;
+          continue;
+        }
+        if (msg.type === 'file') {
+          progressDiv.innerHTML = `Importing ticket <strong>#${msg.ticket_id}</strong>...<br>Processing <strong>${esc(msg.filename)}</strong>`;
+          if (msg.status === 'completed') {
+            importedByTicket[msg.ticket_id] = importedByTicket[msg.ticket_id] || { files: [] };
+            importedByTicket[msg.ticket_id].files.push(msg.filename);
+          }
+          continue;
+        }
+        if (msg.type === 'summary') {
+          summary = msg.summary;
+          if (summary.tickets) {
+            summary.tickets.forEach(t => { ticketTitles[t.id] = t.title; });
+          }
+        }
+      }
     }
-    
-    document.getElementById('importProgress').innerHTML = 'Import complete!';
-    
-    if (res.created_tickets || res.updated_tickets || res.added_prints) {
-      const msg = [
-        res.created_tickets > 0 && `${res.created_tickets} new ticket(s)`,
-        res.updated_tickets > 0 && `${res.updated_tickets} updated`,
-        res.added_prints > 0 && `${res.added_prints} print(s) added`,
-      ].filter(Boolean).join(', ');
-      
-      toast(`✓ Import complete: ${msg}`, 'success');
-      await loadTickets();
-    } else {
-      toast('No new tickets or prints found', 'info');
+
+    if (buffer.trim()) {
+      const msg = JSON.parse(buffer);
+      if (msg.type === 'summary') {
+        summary = msg.summary;
+        if (summary.tickets) {
+          summary.tickets.forEach(t => { ticketTitles[t.id] = t.title; });
+        }
+      }
     }
-    
-    if (res.errors && res.errors.length > 0) {
-      toast(`⚠ ${res.errors.length} error(s) during import`, 'warning');
-      console.log('Import errors:', res.errors);
+
+    progressDiv.innerHTML = 'Import complete!';
+    renderImportedSummary();
+
+    if (summary) {
+      if (summary.created_tickets || summary.updated_tickets || summary.added_prints) {
+        const msg = [
+          summary.created_tickets > 0 && `${summary.created_tickets} new ticket(s)`,
+          summary.updated_tickets > 0 && `${summary.updated_tickets} updated`,
+          summary.added_prints > 0 && `${summary.added_prints} print(s) added`,
+        ].filter(Boolean).join(', ');
+        toast(`✓ Import complete: ${msg}`, 'success');
+        await loadTickets();
+      } else {
+        toast('No new tickets or prints found', 'info');
+      }
+      if (summary.errors && summary.errors.length > 0) {
+        toast(`⚠ ${summary.errors.length} error(s) during import`, 'warning');
+        console.log('Import errors:', summary.errors);
+      }
     }
   } catch (err) {
-    document.getElementById('importProgress').innerHTML = 'Import failed!';
+    progressDiv.innerHTML = 'Import failed!';
     toast('Failed to scan directory: ' + err.message, 'error');
     console.error(err);
   } finally {
