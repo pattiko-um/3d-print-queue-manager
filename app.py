@@ -74,7 +74,7 @@ def init_db():
             filename            TEXT NOT NULL,
             filepath            TEXT NOT NULL,
             status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','in_progress','printed')),
+                                CHECK(status IN ('todo','awaiting_input','in_progress','printed')),
             -- STL geometry
             size_x_mm           REAL,
             size_y_mm           REAL,
@@ -101,8 +101,54 @@ def init_db():
             updated_at          TEXT NOT NULL
         );
     """)
+    migrate_print_status_enum(db)
     db.commit()
     db.close()
+
+
+def migrate_print_status_enum(db):
+    row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='prints'").fetchone()
+    if not row:
+        return
+    create_sql = row[0] or ''
+    if 'awaiting_input' in create_sql:
+        return
+
+    db.execute('PRAGMA foreign_keys=OFF')
+    db.executescript("""
+        BEGIN;
+        CREATE TABLE prints_new (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id           INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            filename            TEXT NOT NULL,
+            filepath            TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'todo'
+                                CHECK(status IN ('todo','awaiting_input','in_progress','printed')),
+            size_x_mm           REAL,
+            size_y_mm           REAL,
+            size_z_mm           REAL,
+            volume_mm3          REAL,
+            triangle_count      INTEGER,
+            has_overhangs       INTEGER DEFAULT 0,
+            overhang_area_mm2   REAL,
+            support_vol_mm3     REAL,
+            layer_count         INTEGER,
+            filament_length_m   REAL,
+            filament_mass_g     REAL,
+            time_minutes        REAL,
+            time_formatted      TEXT,
+            config_json         TEXT,
+            issues_json         TEXT,
+            parse_error         TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+        INSERT INTO prints_new SELECT * FROM prints;
+        DROP TABLE prints;
+        ALTER TABLE prints_new RENAME TO prints;
+        COMMIT;
+    """)
+    db.execute('PRAGMA foreign_keys=ON')
 
 
 # ---------------------------------------------------------------------------
