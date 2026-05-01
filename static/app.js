@@ -6,21 +6,25 @@ let activeTicketId = null;
 let stlFiles = [];
 let dragPrintId = null;
 let dragTicketId = null;
+let showingDeliveredTickets = false;
 const expandedPrints = new Set();
-const ticketBoardStatuses = ['todo', 'awaiting_input', 'in_progress', 'done'];
+const ticketBoardStatuses = ['received', 'awaiting_input', 'queued', 'in_process', 'complete'];
 const ticketBoardLabels = {
-  todo: 'Queued',
+  received: 'Received',
   awaiting_input: 'Awaiting Input',
-  in_progress: 'Printing',
-  done: 'Complete'
+  queued: 'Queued',
+  in_process: 'Printing',
+  complete: 'Complete'
 };
-const printBoardStatuses = ['todo', 'awaiting_input', 'in_progress', 'printed'];
+const printBoardStatuses = ['to_do', 'awaiting_input', 'queued', 'printing', 'complete'];
 const printBoardLabels = {
-  todo: 'Queued',
+  to_do: 'To Do',
   awaiting_input: 'Awaiting Input',
-  in_progress: 'Printing',
-  printed: 'Complete'
+  queued: 'Queued',
+  printing: 'Printing',
+  complete: 'Complete'
 };
+const expandedTicketCards = new Set();
 
 function ticketUrl(ticket) {
   const id = ticket.external_ticket_id || ticket.id;
@@ -57,9 +61,9 @@ function toast(msg, type = 'success') {
 async function loadStats() {
   try {
     const s = await api('/stats');
-    document.getElementById('stat-todo').textContent = s.tickets.todo || 0;
-    document.getElementById('stat-inprog').textContent = s.tickets.in_progress || 0;
-    document.getElementById('stat-done').textContent = s.tickets.done || 0;
+    document.getElementById('stat-todo').textContent = s.tickets.received || s.tickets.todo || 0;
+    document.getElementById('stat-inprog').textContent = s.tickets.in_process || s.tickets.in_progress || 0;
+    document.getElementById('stat-done').textContent = s.tickets.complete || s.tickets.done || 0;
     document.getElementById('stat-time').textContent = formatTime(s.total_time_minutes);
     document.getElementById('stat-filament').textContent = `${(s.total_filament_g/1000).toFixed(2)} kg`;
   } catch(e) {}
@@ -81,14 +85,63 @@ function renderTicketList() {
     return;
   }
 
+  if (showingDeliveredTickets) {
+    const delivered = tickets.filter(t => (t.status || '') === 'delivered');
+    el.innerHTML = `
+      <div class="section-head">
+        <div class="section-label">Delivered Tickets</div>
+        <button class="btn btn-sm" onclick="showTicketBoard()">Back to board</button>
+      </div>
+      <div class="ticket-board-delivered">
+        ${delivered.length === 0 ? `<div class="loading" style="padding:20px;text-align:center;color:var(--text3)">No delivered tickets</div>` : delivered.map(renderDeliveredTicketCard).join('')}
+      </div>
+    `;
+    return;
+  }
+
   const groups = ticketBoardStatuses.reduce((acc, status) => {
-    acc[status] = tickets.filter(t => (t.status || 'todo') === status);
+    acc[status] = tickets.filter(t => (t.status || 'received') === status);
     return acc;
   }, {});
 
   el.innerHTML = `
     <div class="ticket-board">
       ${ticketBoardStatuses.map(status => renderTicketBoardColumn(status, groups[status])).join('')}
+    </div>
+  `;
+}
+
+function showDeliveredTickets() {
+  showingDeliveredTickets = true;
+  renderTicketList();
+}
+
+function showTicketBoard() {
+  showingDeliveredTickets = false;
+  renderTicketList();
+}
+
+function renderDeliveredTicketCard(t) {
+  const issueLabel = t.issues && t.issues.length ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
+  return `
+    <div class="board-card ticket-card delivered-card">
+      <div class="board-card-summary">
+        <div>
+          <div class="board-card-title"><a href="${esc(ticketUrl(t))}" target="_blank" class="ticket-card-title">${esc(t.title)}</a></div>
+          <div class="board-card-meta">
+            <span style="font-size: 10px; color: var(--text3);">${fmtDate(t.created_at)}</span>
+          </div>
+          <div class="board-card-meta">
+            <span>${t.requester ? esc(t.requester) : 'No requester'}</span>
+            <span>${t.remaining_prints} / ${t.print_count} prints remaining</span>
+          </div>
+          <div class="board-card-meta">
+            <span class="board-card-pill ${badgeClass(t.status)}">${esc(statusLabel(t.status))}</span>
+          </div>
+        </div>
+        <button class="board-card-toggle" onclick="selectTicket(${t.id})">›</button>
+      </div>
+      ${issueLabel}
     </div>
   `;
 }
@@ -116,10 +169,11 @@ function renderTicketBoardColumn(status, items) {
 function renderTicketCard(t) {
   const openIcon = '›';
   const isActive = t.id === activeTicketId ? 'active' : '';
+  const isExpandedCard = expandedTicketCards.has(t.id) ? 'expanded' : '';
   const hasIssues = t.issues && t.issues.length > 0;
   const issueLabel = hasIssues ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
   return `
-    <div class="board-card ticket-card ${isActive}"
+    <div class="board-card ticket-card ${isActive} ${isExpandedCard}"
          id="ticket-board-card-${t.id}"
          draggable="true"
          ondragstart="onTicketDragStart(event, ${t.id})">
@@ -138,9 +192,18 @@ function renderTicketCard(t) {
             <span>🧵 ${t.remaining_filament_g.toFixed(0)}g</span>
           </div>
         </div>
+        <button class="board-card-toggle" onclick="toggleTicketDetails(event, ${t.id})">${expandedTicketCards.has(t.id) ? '−' : '+'}</button>
         <button class="board-card-toggle" onclick="selectTicket(${t.id})">${openIcon}</button>
       </div>
       ${issueLabel}
+      <div class="board-card-details">
+        ${t.prints && t.prints.length ? t.prints.map(p => `
+          <div class="board-card-row ticket-print-row">
+            <span class="ticket-print-name">${esc(p.filename)}</span>
+            <span class="board-card-pill ${badgeClass('print-'+p.status)}">${esc(printStatusLabel(p.status))}</span>
+          </div>
+        `).join('') : '<div class="ticket-print-empty">No prints yet</div>'}
+      </div>
     </div>
   `;
 }
@@ -156,9 +219,19 @@ async function selectTicket(id) {
   document.querySelector('.app').classList.add('detail-open');
 }
 
+function toggleTicketDetails(event, ticketId) {
+  event.stopPropagation();
+  if (expandedTicketCards.has(ticketId)) {
+    expandedTicketCards.delete(ticketId);
+  } else {
+    expandedTicketCards.add(ticketId);
+  }
+  renderTicketList();
+}
+
 function renderDetail(ticket) {
   const pane = document.getElementById('detailPane');
-  const printsDone = ticket.prints.filter(p => p.status === 'printed').length;
+  const printsDone = ticket.prints.filter(p => p.status === 'complete').length;
   const printsTotal = ticket.prints.length;
   const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
 
@@ -170,18 +243,22 @@ function renderDetail(ticket) {
         <div class="detail-meta">
           ${ticket.requester ? `<div class="detail-meta-item">from <strong>${esc(ticket.requester)}</strong></div>` : ''}
           <div class="detail-meta-item">created <strong>${fmtDate(ticket.created_at)}</strong></div>
-          <select class="status-select" onchange="updateTicketStatus(${ticket.id}, this.value)">
-            <option value="todo" ${ticket.status==='todo'?'selected':''}>Queued</option>
-            <option value="awaiting_input" ${ticket.status==='awaiting_input'?'selected':''}>Awaiting Input</option>
-            <option value="in_progress" ${ticket.status==='in_progress'?'selected':''}>Printing</option>
-            <option value="done" ${ticket.status==='done'?'selected':''}>Complete</option>
-          </select>
+          ${ticket.status === 'delivered'
+            ? `<div class="detail-meta-item"><strong>Delivered</strong></div>`
+            : `<select class="status-select" onchange="updateTicketStatus(${ticket.id}, this.value)">
+                 <option value="received" ${ticket.status==='received'?'selected':''}>Received</option>
+                 <option value="awaiting_input" ${ticket.status==='awaiting_input'?'selected':''}>Awaiting Input</option>
+                 <option value="queued" ${ticket.status==='queued'?'selected':''}>Queued</option>
+                 <option value="in_process" ${ticket.status==='in_process'?'selected':''}>Printing</option>
+                 <option value="complete" ${ticket.status==='complete'?'selected':''}>Complete</option>
+               </select>`}
         </div>
       </div>
       <div class="detail-actions">
         <button class="btn btn-sm btn-ghost btn-back" onclick="closeTicketDetail()">← Back</button>
         <button class="btn btn-sm" onclick="openEditTicketModal(${ticket.id})">Edit</button>
         <button class="btn btn-sm btn-ghost btn-danger" onclick="deleteTicket(${ticket.id})">Delete</button>
+        ${ticket.status !== 'delivered' ? `<button class="btn btn-sm btn-primary" onclick="deliverTicket(${ticket.id})">Deliver</button>` : ''}
       </div>
     </div>
     <div class="detail-body">
@@ -226,7 +303,7 @@ function renderBoardColumns(prints) {
   }, {});
 
   prints.forEach(p => {
-    const key = printBoardStatuses.includes(p.status) ? p.status : 'todo';
+    const key = printBoardStatuses.includes(p.status) ? p.status : 'to_do';
     groups[key].push(p);
   });
 
@@ -321,10 +398,11 @@ function renderBoardCard(p) {
         </div>
         <div class="board-card-actions">
           <select class="status-select" onchange="updatePrintStatus(${p.id}, this.value)">
-            <option value="todo" ${p.status==='todo'?'selected':''}>Queued</option>
+            <option value="to_do" ${p.status==='to_do'?'selected':''}>To Do</option>
             <option value="awaiting_input" ${p.status==='awaiting_input'?'selected':''}>Awaiting Input</option>
-            <option value="in_progress" ${p.status==='in_progress'?'selected':''}>Printing</option>
-            <option value="printed" ${p.status==='printed'?'selected':''}>Complete</option>
+            <option value="queued" ${p.status==='queued'?'selected':''}>Queued</option>
+            <option value="printing" ${p.status==='printing'?'selected':''}>Printing</option>
+            <option value="complete" ${p.status==='complete'?'selected':''}>Complete</option>
           </select>
           <button class="btn btn-sm btn-ghost" onclick="reanalyzePrint(${p.id})" title="Re-run analysis">↺ Re-scan</button>
           <button class="btn btn-sm btn-ghost btn-danger" onclick="deletePrint(${p.id})">Remove</button>
@@ -428,12 +506,12 @@ async function updatePrintStatus(printId, status) {
   await api(`/prints/${printId}`, { method: 'PATCH', body: { status } });
   let t = await api(`/tickets/${activeTicketId}`);
   
-  // Auto-complete ticket if all prints are printed
-  const allPrinted = t.prints.every(p => p.status === 'printed');
-  if (allPrinted && t.status !== 'done') {
-    await api(`/tickets/${activeTicketId}`, { method: 'PATCH', body: { status: 'done' } });
+  // Auto-complete ticket if all prints are complete
+  const allComplete = t.prints.every(p => p.status === 'complete');
+  if (allComplete && t.status !== 'complete') {
+    await api(`/tickets/${activeTicketId}`, { method: 'PATCH', body: { status: 'complete' } });
     t = await api(`/tickets/${activeTicketId}`);
-    toast('All prints complete! Ticket marked done.');
+    toast('All prints complete! Ticket marked complete.');
   } else {
     toast(`Print marked ${printStatusLabel(status)}`);
   }
@@ -652,33 +730,45 @@ async function openAddPrintsModal(ticketId) {
 // ============================================================
 function badgeClass(status) {
   const map = {
-    'todo': 'badge badge-todo',
+    'received': 'badge badge-received',
     'awaiting_input': 'badge badge-awaiting_input',
-    'in_progress': 'badge badge-in_progress',
-    'done': 'badge badge-done',
-    'print-todo': 'badge badge-todo',
-    'print-in_progress': 'badge badge-in_progress',
-    'print-printed': 'badge badge-printed',
+    'queued': 'badge badge-queued',
+    'in_process': 'badge badge-in_progress',
+    'complete': 'badge badge-done',
+    'delivered': 'badge badge-done',
+    'print-to_do': 'badge badge-todo',
     'print-awaiting_input': 'badge badge-awaiting_input',
+    'print-queued': 'badge badge-queued',
+    'print-printing': 'badge badge-in_progress',
+    'print-complete': 'badge badge-printed',
   };
   return map[status] || 'badge badge-todo';
 }
 
 function statusLabel(s) {
   return {
-    todo: 'Queued',
+    received: 'Received',
     awaiting_input: 'Awaiting Input',
+    queued: 'Queued',
+    in_process: 'Printing',
+    complete: 'Complete',
+    delivered: 'Delivered',
+    todo: 'Queued',
     in_progress: 'Printing',
-    done: 'Complete'
+    done: 'Complete',
   }[s] || s;
 }
 
 function printStatusLabel(s) {
   return {
-    todo: 'Queued',
+    to_do: 'To Do',
     awaiting_input: 'Awaiting Input',
+    queued: 'Queued',
+    printing: 'Printing',
+    complete: 'Complete',
+    todo: 'Queued',
     in_progress: 'Printing',
-    printed: 'Complete'
+    printed: 'Complete',
   }[s] || s;
 }
 

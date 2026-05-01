@@ -13,9 +13,9 @@
   <header>
     <div class="logo">PrintQueue</div>
     <div class="header-stats" id="headerStats">
-      <div class="hstat"><span class="hstat-val" id="stat-todo">—</span><span class="hstat-label">To Do</span></div>
+      <div class="hstat"><span class="hstat-val" id="stat-todo">—</span><span class="hstat-label">Received</span></div>
       <div class="hstat"><span class="hstat-val" id="stat-inprog">—</span><span class="hstat-label">In Progress</span></div>
-      <div class="hstat"><span class="hstat-val" id="stat-done">—</span><span class="hstat-label">Done</span></div>
+      <div class="hstat"><span class="hstat-val" id="stat-done">—</span><span class="hstat-label">Complete</span></div>
       <div class="hstat"><span class="hstat-val" id="stat-time">—</span><span class="hstat-label">Total Print Time</span></div>
       <div class="hstat"><span class="hstat-val" id="stat-filament">—</span><span class="hstat-label">Total Filament</span></div>
     </div>
@@ -26,8 +26,9 @@
       <div class="ticket-header">
         <span class="sidebar-title">Tickets</span>
         <div class="sidebar-header-buttons">
-          <button class="btn btn-primary btn-sm" id="rescanBtn" onclick="rescanDirectory()">🔄 Rescan</button>
-          <button class="btn btn-primary btn-sm" onclick="openNewTicketModal()">+ New</button>
+          <button class="btn btn-primary btn-sm" id="rescanBtn" onclick="rescanDirectory()">🔄 Scan Directory</button>
+        <button class="btn btn-secondary btn-sm" onclick="showDeliveredTickets()">Delivered</button>
+        <button class="btn btn-primary btn-sm" onclick="openNewTicketModal()">+ New</button>
         </div>
       </div>
       <div class="ticket-list" id="ticketList">

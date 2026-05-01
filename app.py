@@ -61,8 +61,8 @@ def init_db():
             external_ticket_id  INTEGER,
             ticket_url          TEXT,
             notes               TEXT DEFAULT '',
-            status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','awaiting_input','in_progress','done')),
+            status              TEXT NOT NULL DEFAULT 'received'
+                                CHECK(status IN ('received','awaiting_input','queued','in_process','complete','delivered')),
             priority            INTEGER NOT NULL DEFAULT 0,
             created_at          TEXT NOT NULL,
             updated_at          TEXT NOT NULL
@@ -73,8 +73,8 @@ def init_db():
             ticket_id           INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             filename            TEXT NOT NULL,
             filepath            TEXT NOT NULL,
-            status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','awaiting_input','in_progress','printed')),
+            status              TEXT NOT NULL DEFAULT 'to_do'
+                                CHECK(status IN ('to_do','awaiting_input','queued','printing','complete')),
             -- STL geometry
             size_x_mm           REAL,
             size_y_mm           REAL,
@@ -101,88 +101,10 @@ def init_db():
             updated_at          TEXT NOT NULL
         );
     """)
-    migrate_ticket_status_enum(db)
-    migrate_print_status_enum(db)
     db.commit()
     db.close()
 
 
-def migrate_ticket_status_enum(db):
-    row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").fetchone()
-    if not row:
-        return
-    create_sql = row[0] or ''
-    if 'awaiting_input' in create_sql:
-        return
-
-    db.execute('PRAGMA foreign_keys=OFF')
-    db.executescript("""
-        BEGIN;
-        CREATE TABLE tickets_new (
-            id                  INTEGER PRIMARY KEY,
-            title               TEXT NOT NULL,
-            requester           TEXT DEFAULT '',
-            username            TEXT DEFAULT '',
-            external_ticket_id  INTEGER,
-            ticket_url          TEXT,
-            notes               TEXT DEFAULT '',
-            status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','awaiting_input','in_progress','done')),
-            priority            INTEGER NOT NULL DEFAULT 0,
-            created_at          TEXT NOT NULL,
-            updated_at          TEXT NOT NULL
-        );
-        INSERT INTO tickets_new SELECT * FROM tickets;
-        DROP TABLE tickets;
-        ALTER TABLE tickets_new RENAME TO tickets;
-        COMMIT;
-    """)
-    db.execute('PRAGMA foreign_keys=ON')
-
-
-def migrate_print_status_enum(db):
-    row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='prints'").fetchone()
-    if not row:
-        return
-    create_sql = row[0] or ''
-    if 'awaiting_input' in create_sql:
-        return
-
-    db.execute('PRAGMA foreign_keys=OFF')
-    db.executescript("""
-        BEGIN;
-        CREATE TABLE prints_new (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_id           INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-            filename            TEXT NOT NULL,
-            filepath            TEXT NOT NULL,
-            status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','awaiting_input','in_progress','printed')),
-            size_x_mm           REAL,
-            size_y_mm           REAL,
-            size_z_mm           REAL,
-            volume_mm3          REAL,
-            triangle_count      INTEGER,
-            has_overhangs       INTEGER DEFAULT 0,
-            overhang_area_mm2   REAL,
-            support_vol_mm3     REAL,
-            layer_count         INTEGER,
-            filament_length_m   REAL,
-            filament_mass_g     REAL,
-            time_minutes        REAL,
-            time_formatted      TEXT,
-            config_json         TEXT,
-            issues_json         TEXT,
-            parse_error         TEXT,
-            created_at          TEXT NOT NULL,
-            updated_at          TEXT NOT NULL
-        );
-        INSERT INTO prints_new SELECT * FROM prints;
-        DROP TABLE prints;
-        ALTER TABLE prints_new RENAME TO prints;
-        COMMIT;
-    """)
-    db.execute('PRAGMA foreign_keys=ON')
 
 
 # ---------------------------------------------------------------------------
@@ -288,13 +210,21 @@ def list_tickets():
     for row in rows:
         t = row_to_dict(row)
         prints = db.execute(
-            "SELECT status, time_minutes, filament_mass_g, issues_json FROM prints WHERE ticket_id=?",
+            "SELECT id, filename, status, time_minutes, filament_mass_g, issues_json, created_at FROM prints WHERE ticket_id=? ORDER BY created_at DESC",
             (t["id"],)
         ).fetchall()
+        t["prints"] = [
+            {
+                "id": p["id"],
+                "filename": p["filename"],
+                "status": p["status"],
+            }
+            for p in prints
+        ]
         t["print_count"] = len(prints)
-        t["remaining_prints"] = sum(1 for p in prints if p["status"] != "printed")
-        t["remaining_time_minutes"] = sum((p["time_minutes"] or 0) for p in prints if p["status"] != "printed")
-        t["remaining_filament_g"] = sum((p["filament_mass_g"] or 0) for p in prints if p["status"] != "printed")
+        t["remaining_prints"] = sum(1 for p in prints if p["status"] != "complete")
+        t["remaining_time_minutes"] = sum((p["time_minutes"] or 0) for p in prints if p["status"] != "complete")
+        t["remaining_filament_g"] = sum((p["filament_mass_g"] or 0) for p in prints if p["status"] != "complete")
         issues = set()
         for p in prints:
             if p["issues_json"]:
@@ -326,7 +256,7 @@ def create_ticket():
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (data["title"], data.get("requester", ""), data.get("username", ""),
          external_ticket_id, ticket_url, data.get("notes", ""),
-         data.get("status", "todo"), data.get("priority", 0), ts, ts)
+         data.get("status", "received"), data.get("priority", 0), ts, ts)
     )
     db.commit()
     return jsonify(ticket_with_prints(db, cur.lastrowid)), 201
@@ -422,7 +352,7 @@ def import_from_directory():
                 db.execute(
                     "INSERT INTO tickets (id, title, requester, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
                     "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (ticket_id, title, username, username, ticket_id, ticket_url, "todo", ts, ts)
+                    (ticket_id, title, username, username, ticket_id, ticket_url, "received", ts, ts)
                 )
                 db.commit()
                 ticket_row_id = ticket_id
@@ -456,7 +386,7 @@ def import_from_directory():
                          created_at, updated_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        ticket_row_id, filename, stl_path, "todo",
+                        ticket_row_id, filename, stl_path, "to_do",
                         analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
                         analysis.get("volume_mm3"), analysis.get("triangle_count"),
                         analysis.get("has_overhangs"), analysis.get("overhang_area_mm2"), analysis.get("support_vol_mm3"),
@@ -526,7 +456,7 @@ def add_print(tid):
              created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            tid, filename, filepath, "todo",
+            tid, filename, filepath, "to_do",
             result.get("size_x_mm"), result.get("size_y_mm"), result.get("size_z_mm"),
             result.get("volume_mm3"), result.get("triangle_count"),
             result.get("has_overhangs"), result.get("overhang_area_mm2"), result.get("support_vol_mm3"),
