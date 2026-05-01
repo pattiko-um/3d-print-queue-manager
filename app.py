@@ -62,7 +62,7 @@ def init_db():
             ticket_url          TEXT,
             notes               TEXT DEFAULT '',
             status              TEXT NOT NULL DEFAULT 'todo'
-                                CHECK(status IN ('todo','in_progress','done')),
+                                CHECK(status IN ('todo','awaiting_input','in_progress','done')),
             priority            INTEGER NOT NULL DEFAULT 0,
             created_at          TEXT NOT NULL,
             updated_at          TEXT NOT NULL
@@ -101,9 +101,43 @@ def init_db():
             updated_at          TEXT NOT NULL
         );
     """)
+    migrate_ticket_status_enum(db)
     migrate_print_status_enum(db)
     db.commit()
     db.close()
+
+
+def migrate_ticket_status_enum(db):
+    row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").fetchone()
+    if not row:
+        return
+    create_sql = row[0] or ''
+    if 'awaiting_input' in create_sql:
+        return
+
+    db.execute('PRAGMA foreign_keys=OFF')
+    db.executescript("""
+        BEGIN;
+        CREATE TABLE tickets_new (
+            id                  INTEGER PRIMARY KEY,
+            title               TEXT NOT NULL,
+            requester           TEXT DEFAULT '',
+            username            TEXT DEFAULT '',
+            external_ticket_id  INTEGER,
+            ticket_url          TEXT,
+            notes               TEXT DEFAULT '',
+            status              TEXT NOT NULL DEFAULT 'todo'
+                                CHECK(status IN ('todo','awaiting_input','in_progress','done')),
+            priority            INTEGER NOT NULL DEFAULT 0,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+        INSERT INTO tickets_new SELECT * FROM tickets;
+        DROP TABLE tickets;
+        ALTER TABLE tickets_new RENAME TO tickets;
+        COMMIT;
+    """)
+    db.execute('PRAGMA foreign_keys=ON')
 
 
 def migrate_print_status_enum(db):
@@ -254,12 +288,23 @@ def list_tickets():
     for row in rows:
         t = row_to_dict(row)
         prints = db.execute(
-            "SELECT id, status, time_minutes, filament_mass_g FROM prints WHERE ticket_id=?",
+            "SELECT status, time_minutes, filament_mass_g, issues_json FROM prints WHERE ticket_id=?",
             (t["id"],)
         ).fetchall()
         t["print_count"] = len(prints)
-        t["total_time_minutes"] = sum(p["time_minutes"] or 0 for p in prints)
-        t["total_filament_g"] = sum(p["filament_mass_g"] or 0 for p in prints)
+        t["remaining_prints"] = sum(1 for p in prints if p["status"] != "printed")
+        t["remaining_time_minutes"] = sum((p["time_minutes"] or 0) for p in prints if p["status"] != "printed")
+        t["remaining_filament_g"] = sum((p["filament_mass_g"] or 0) for p in prints if p["status"] != "printed")
+        issues = set()
+        for p in prints:
+            if p["issues_json"]:
+                try:
+                    parsed = json.loads(p["issues_json"])
+                    if isinstance(parsed, list):
+                        issues.update(str(item) for item in parsed if item)
+                except json.JSONDecodeError:
+                    issues.add(str(p["issues_json"]))
+        t["issues"] = sorted(issues)
         tickets.append(t)
     return jsonify(tickets)
 
