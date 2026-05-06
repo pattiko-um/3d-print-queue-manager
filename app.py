@@ -151,11 +151,21 @@ def ticket_with_prints(db, ticket_id):
 def scan_and_analyze_stl(filepath_str):
     """Import estimator lazily so the server starts even if numpy is missing."""
     try:
-        from stl_estimator import analyze_stl_with_prusaslicer, analyze_stl
+        ext = Path(filepath_str).suffix.lower()
+        if ext == ".3mf":
+            from three_mf_estimator import analyze_3mf_with_prusaslicer
+            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "config.ini"))
 
-        return analyze_stl_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH)
+        from stl_estimator import analyze_stl_with_prusaslicer, analyze_stl
+        if ext == ".stl":
+            return analyze_stl_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH)
+        if ext == ".stp":
+            from three_mf_estimator import analyze_3mf_with_prusaslicer
+            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "config.ini"))
+
+        return {"error": f"Unsupported file type: {ext}"}
     except ImportError as e:
-        return {"error": f"stl_estimator unavailable: {e}"}
+        return {"error": f"estimator unavailable: {e}"}
 
 
 def build_ticket_url(ticket_id):
@@ -166,7 +176,7 @@ def build_ticket_url(ticket_id):
 def scan_print_root_directory():
     """
     Scan PRINT_ROOT_DIR for subdirectories matching pattern: <ticket_id> - <username>
-    Returns list of dicts with ticket_id, username, and stl_files.
+    Returns list of dicts with ticket_id, username, and model files.
     """
     import re
     results = []
@@ -188,8 +198,8 @@ def scan_print_root_directory():
         ticket_id = int(match.group(1))
         username = match.group(2).strip()
         
-        # Find all STL and STP files in this subdirectory
-        stl_files = sorted([f for f in subdir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp')])
+        # Find all STL, STP, and 3MF files in this subdirectory
+        stl_files = sorted([f for f in subdir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf')])
         
         if stl_files:
             results.append({
@@ -434,6 +444,7 @@ def add_print(tid):
     """
     Add a print to a ticket by filepath.
     Body: { "filepath": "/Volumes/Scratch/3D Print Test/123 - user/part.stl" }
+    Supports .stl, .stp, and .3mf models.
     """
     db = get_db()
     ticket = db.execute("SELECT id FROM tickets WHERE id=?", (tid,)).fetchone()
@@ -449,7 +460,7 @@ def add_print(tid):
     if not filepath_obj.exists():
         return jsonify({"error": f"file not found: {filepath}"}), 404
     
-    # Analyze STL
+    # Analyze model file
     result = scan_and_analyze_stl(filepath)
     error = result.get("error")
     ts = now_iso()
