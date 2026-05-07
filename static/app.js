@@ -167,33 +167,34 @@ function renderTicketBoardColumn(status, items) {
 }
 
 function renderTicketCard(t) {
-  const openIcon = '›';
   const isActive = t.id === activeTicketId ? 'active' : '';
   const isExpandedCard = expandedTicketCards.has(t.id) ? 'expanded' : '';
   const hasIssues = t.issues && t.issues.length > 0;
   const issueLabel = hasIssues ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
+  const printsDone = t.prints ? t.prints.filter(p => p.status === 'complete').length : 0;
+  const printsTotal = t.print_count || 0;
+  const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
   return `
     <div class="board-card ticket-card ${isActive} ${isExpandedCard}"
          id="ticket-board-card-${t.id}"
          draggable="true"
          ondragstart="onTicketDragStart(event, ${t.id})">
+      <div class="board-card-header">
+        <div class="board-card-title"><span onclick="selectTicket(${t.id})" class="ticket-card-title">${esc(t.title)}</span></div>
+      </div>
       <div class="board-card-summary">
-        <div>
-          <div class="board-card-title"><a href="${esc(ticketUrl(t))}" target="_blank" class="ticket-card-title">${esc(t.title)}</a></div>
-          <div class="board-card-meta">
-            <span style="font-size: 10px; color: var(--text3);">${fmtDate(t.created_at)}</span>
-          </div>
-          <div class="board-card-meta">
-            <span>${t.requester ? esc(t.requester) : 'No requester'}</span>
-            <span>${t.remaining_prints} / ${t.print_count} prints remaining</span>
-          </div>
-          <div class="board-card-meta">
-            <span>⏱ ${formatTime(t.remaining_time_minutes)}</span>
-            <span>🧵 ${t.remaining_filament_g.toFixed(0)}g</span>
-          </div>
+        <div class="board-card-meta">
+          <span>${t.requester ? esc(t.requester) : 'No requester'}</span> | 
+          <span style="font-size: 10px; color: var(--text3);">${fmtDate(t.created_at)}</span> | 
+          <span onclick="toggleTicketDetails(event, ${t.id})" class="board-card-link">${expandedTicketCards.has(t.id) ? 'Collapse' : 'Expand'}</span>
         </div>
-        <button class="board-card-toggle" onclick="toggleTicketDetails(event, ${t.id})">${expandedTicketCards.has(t.id) ? '−' : '+'}</button>
-        <button class="board-card-toggle" onclick="selectTicket(${t.id})">${openIcon}</button>
+        <div class="board-card-meta">
+        </div>
+        <div class="board-card-meta">
+          <span>⏱ ${formatTime(t.remaining_time_minutes)}</span>
+          <span>🧵 ${t.remaining_filament_g.toFixed(0)}g</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
       ${issueLabel}
       <div class="board-card-details">
@@ -268,21 +269,17 @@ function renderDetail(ticket) {
 
       <div class="summary-bar">
         <div class="summary-cell">
-          <div class="summary-val">${printsTotal}</div>
-          <div class="summary-label">Files</div>
-        </div>
-        <div class="summary-cell">
-          <div class="summary-val">${formatTime(ticket.total_time_minutes)}</div>
-          <div class="summary-label">Est. Print Time</div>
-        </div>
-        <div class="summary-cell">
-          <div class="summary-val">${ticket.total_filament_g.toFixed(1)}g</div>
-          <div class="summary-label">Est. Filament</div>
-        </div>
-        <div class="summary-cell">
-          <div class="summary-val">${pct}%</div>
+          <div class="summary-val">${printsDone} / ${printsTotal}</div>
           <div class="summary-label">Printed</div>
           <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+        </div>
+        <div class="summary-cell">
+          <div class="summary-val">${formatTime(ticket.remaining_time_minutes)}</div>
+          <div class="summary-label">Remaining Print Time</div>
+        </div>
+        <div class="summary-cell">
+          <div class="summary-val">${ticket.remaining_filament_g.toFixed(1)}g</div>
+          <div class="summary-label">Remaining Filament</div>
         </div>
       </div>
 

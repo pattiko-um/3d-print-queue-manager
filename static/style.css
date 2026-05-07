@@ -350,7 +350,7 @@ header {
 /* ---- Summary bar ---- */
 .summary-bar {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 1px;
   background: var(--border);
   border: 1px solid var(--border);
@@ -474,11 +474,18 @@ header {
   opacity: 0.45;
 }
 
-.board-card-summary {
+.board-card-header {
   display: grid;
   grid-template-columns: 1fr auto auto;
   gap: 12px;
   align-items: start;
+  margin-bottom: 8px;
+}
+
+.board-card-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .board-card-title {
@@ -489,6 +496,9 @@ header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+  display: inline-block;
+  cursor: pointer;
 }
 
 .board-card-meta {
@@ -498,6 +508,18 @@ header {
   color: var(--text2);
   font-family: var(--mono);
   font-size: 11px;
+}
+
+.board-card-link {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.board-card-link:hover {
+  color: var(--accent2);
+  text-decoration: underline;
 }
 
 .board-card-toggle {

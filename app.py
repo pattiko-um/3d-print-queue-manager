@@ -145,6 +145,9 @@ def ticket_with_prints(db, ticket_id):
     ticket["print_count"] = len(prints)
     ticket["total_time_minutes"] = sum(p.get("time_minutes") or 0 for p in prints)
     ticket["total_filament_g"] = sum(p.get("filament_mass_g") or 0 for p in prints)
+    ticket["remaining_prints"] = sum(1 for p in prints if p["status"] != "complete")
+    ticket["remaining_time_minutes"] = sum((p.get("time_minutes") or 0) for p in prints if p["status"] != "complete")
+    ticket["remaining_filament_g"] = sum((p.get("filament_mass_g") or 0) for p in prints if p["status"] != "complete")
     return ticket
 
 
