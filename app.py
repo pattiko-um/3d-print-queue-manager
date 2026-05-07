@@ -7,6 +7,7 @@ import os
 import json
 import sqlite3
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, g, Response, stream_with_context
@@ -557,6 +558,29 @@ def reanalyze_print(pid):
     )
     db.commit()
     return jsonify(ticket_with_prints(db, p["ticket_id"]))
+
+
+@app.route("/api/prints/<int:pid>/open-in-prusaslicer", methods=["POST"])
+def open_in_prusaslicer(pid):
+    """Open the print file in PrusaSlicer."""
+    db = get_db()
+    p = row_to_dict(db.execute("SELECT filepath FROM prints WHERE id=?", (pid,)).fetchone())
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    
+    filepath = p["filepath"]
+    if not os.path.exists(filepath):
+        return jsonify({"error": f"file not found: {filepath}"}), 404
+    
+    if not PRUSA_SLICER_PATH:
+        return jsonify({"error": "PrusaSlicer path not configured"}), 500
+    
+    try:
+        # Launch PrusaSlicer with the file
+        subprocess.Popen([PRUSA_SLICER_PATH, filepath])
+        return jsonify({"message": "Opened in PrusaSlicer"})
+    except Exception as e:
+        return jsonify({"error": f"Failed to open PrusaSlicer: {str(e)}"}), 500
 
 
 # ---------------------------------------------------------------------------

@@ -404,6 +404,7 @@ function renderBoardCard(p) {
             <option value="complete" ${p.status==='complete'?'selected':''}>Complete</option>
           </select>
           <button class="btn btn-sm btn-ghost" onclick="reanalyzePrint(${p.id})" title="Re-run analysis">↺ Re-scan</button>
+          <button class="btn btn-sm btn-ghost" onclick="openInPrusaSlicer(${p.id})" title="Open in PrusaSlicer">🖨️ Open</button>
           <button class="btn btn-sm btn-ghost btn-danger" onclick="deletePrint(${p.id})">Remove</button>
         </div>
       </div>
@@ -547,6 +548,15 @@ async function reanalyzePrint(id) {
   const ticket = await api(`/prints/${id}/reanalyze`, { method: 'POST' });
   renderDetail(ticket);
   toast('Re-scan complete');
+}
+
+async function openInPrusaSlicer(id) {
+  try {
+    await api(`/prints/${id}/open-in-prusaslicer`, { method: 'POST' });
+    toast('Opened in PrusaSlicer');
+  } catch (e) {
+    toast('Failed to open in PrusaSlicer', 'error');
+  }
 }
 
 // ============================================================
