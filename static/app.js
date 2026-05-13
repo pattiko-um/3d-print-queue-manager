@@ -339,12 +339,33 @@ function renderBoardCard(p) {
   const hasError = !!p.parse_error;
   const hasIssues = p.issues && p.issues.length > 0;
   const issueText = hasError ? p.parse_error : hasIssues ? p.issues.join(', ') : '';
+  
+  // Account for quantity in calculations
+  const qty = p.quantity || 1;
+  const qty_completed = p.quantity_completed || 0;
+  const effective_qty = qty - qty_completed; // Remaining copies for this print
+  
   const timeLabel = p.time_formatted || formatTime(p.time_minutes);
-  const filamentLabel = p.filament_mass_g != null ? `${p.filament_mass_g.toFixed(0)}g` : '—';
+  const totalTime = p.time_minutes ? (p.time_minutes * effective_qty) : 0;
+  const totalTimeFmt = formatTime(totalTime);
+  
+  const filamentLabel = p.filament_mass_g != null ? `${(p.filament_mass_g * effective_qty).toFixed(0)}g` : '—';
   const dimensionLabel = p.size_x_mm && p.size_y_mm && p.size_z_mm
     ? `${p.size_x_mm}×${p.size_y_mm}×${p.size_z_mm} mm`
     : 'Dimensions unknown';
   const expanded = expandedPrints.has(p.id) ? 'expanded' : '';
+  
+  // Quantity badge
+  const badgeValue = p.status === 'printing' ? `${qty_completed}/${qty}` : qty;
+  const qtyBadge = qty > 1 ? `<div class="quantity-badge">${badgeValue}</div>` : '';
+  
+  // Completion buttons for printing status
+  const completionButtons = p.status === 'printing' && qty > 1 ? `
+    <div class="completion-buttons">
+      <button class="btn btn-sm btn-ghost" onclick="incrementCompleted(${p.id})" title="Mark one more completed">+1</button>
+      <button class="btn btn-sm btn-ghost" onclick="decrementCompleted(${p.id})" title="Unmark one completed" ${qty_completed <= 0 ? 'disabled' : ''}>-1</button>
+    </div>
+  ` : '';
 
   return `
     <div class="board-card ${expanded}" id="board-card-${p.id}"
@@ -354,7 +375,7 @@ function renderBoardCard(p) {
         <div>
           <div class="board-card-title">${esc(p.filename)}</div>
           <div class="board-card-meta">
-            <span>⏱ ${timeLabel}</span>
+            <span>⏱ ${totalTimeFmt}</span>
             <span>🧵 ${filamentLabel}</span>
           </div>
           <div class="board-card-meta">
@@ -362,7 +383,9 @@ function renderBoardCard(p) {
           </div>
         </div>
         <button class="board-card-toggle" onclick="toggleCardDetails(event, ${p.id})">${expanded ? '−' : '+'}</button>
+        ${qtyBadge}
       </div>
+      ${completionButtons}
       ${issueText ? `<div class="${hasError ? 'board-card-error' : 'board-card-issue'}">⚠ ${esc(issueText)}</div>` : ''}
       <div class="board-card-details">
         <div class="board-card-row">
@@ -377,12 +400,22 @@ function renderBoardCard(p) {
         </div>
         <div class="board-card-row">
           <div class="board-card-field">
-            <span class="board-card-field-label">Print Time</span>
+            <span class="board-card-field-label">Print Time (per copy)</span>
             <span class="board-card-field-value">${timeLabel} ${p.time_minutes != null ? `(${p.time_minutes.toFixed(0)} min)` : ''}</span>
           </div>
           <div class="board-card-field">
-            <span class="board-card-field-label">Filament</span>
-            <span class="board-card-field-value">${filamentLabel} / ${p.filament_length_m != null ? `${p.filament_length_m}m` : '—'}</span>
+            <span class="board-card-field-label">Filament (per copy)</span>
+            <span class="board-card-field-value">${p.filament_mass_g != null ? `${p.filament_mass_g.toFixed(0)}g` : '—'} / ${p.filament_length_m != null ? `${p.filament_length_m}m` : '—'}</span>
+          </div>
+        </div>
+        <div class="board-card-row">
+          <div class="board-card-field">
+            <span class="board-card-field-label">Total Time</span>
+            <span class="board-card-field-value">${totalTimeFmt}</span>
+          </div>
+          <div class="board-card-field">
+            <span class="board-card-field-label">Total Filament</span>
+            <span class="board-card-field-value">${filamentLabel}</span>
           </div>
         </div>
         <div class="board-card-row">
@@ -394,6 +427,18 @@ function renderBoardCard(p) {
             <span class="board-card-field-label">Triangles</span>
             <span class="board-card-field-value">${p.triangle_count != null ? p.triangle_count.toLocaleString() : '—'}</span>
           </div>
+        </div>
+        <div class="board-card-row">
+          <div class="board-card-field" style="flex: 1;">
+            <span class="board-card-field-label">Quantity</span>
+            <input type="number" min="1" value="${qty}" class="form-input" style="width: 60px;" onchange="updatePrintQuantity(${p.id}, this.value)">
+          </div>
+          ${p.status === 'printing' ? `
+          <div class="board-card-field" style="flex: 1;">
+            <span class="board-card-field-label">Completed</span>
+            <span class="board-card-field-value">${qty_completed}/${qty}</span>
+          </div>
+          ` : ''}
         </div>
         <div class="board-card-actions">
           <select class="status-select" onchange="updatePrintStatus(${p.id}, this.value)">
@@ -557,6 +602,37 @@ async function openInPrusaSlicer(id) {
   } catch (e) {
     toast('Failed to open in PrusaSlicer', 'error');
   }
+}
+
+async function updatePrintQuantity(printId, quantity) {
+  const qty = parseInt(quantity);
+  if (qty < 1 || isNaN(qty)) {
+    toast('Quantity must be at least 1', 'error');
+    return;
+  }
+  
+  await api(`/prints/${printId}`, { method: 'PATCH', body: { quantity: qty } });
+  const ticket = await api(`/tickets/${activeTicketId}`);
+  renderDetail(ticket);
+  await loadStats();
+  await loadTickets();
+  toast('Quantity updated');
+}
+
+async function incrementCompleted(printId) {
+  await api(`/prints/${printId}/increment-completed`, { method: 'POST' });
+  const ticket = await api(`/tickets/${activeTicketId}`);
+  renderDetail(ticket);
+  await loadStats();
+  await loadTickets();
+}
+
+async function decrementCompleted(printId) {
+  await api(`/prints/${printId}/decrement-completed`, { method: 'POST' });
+  const ticket = await api(`/tickets/${activeTicketId}`);
+  renderDetail(ticket);
+  await loadStats();
+  await loadTickets();
 }
 
 // ============================================================

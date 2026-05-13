@@ -85,6 +85,9 @@ def init_db():
             filepath            TEXT NOT NULL,
             status              TEXT NOT NULL DEFAULT 'to_do'
                                 CHECK(status IN ('to_do','awaiting_input','queued','printing','complete')),
+            -- Quantity tracking
+            quantity            INTEGER NOT NULL DEFAULT 1,
+            quantity_completed  INTEGER NOT NULL DEFAULT 0,
             -- STL geometry
             size_x_mm           REAL,
             size_y_mm           REAL,
@@ -112,6 +115,16 @@ def init_db():
         );
     """)
     db.commit()
+    
+    # Migration: Add quantity columns if they don't exist
+    cursor = db.execute("PRAGMA table_info(prints)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "quantity" not in columns:
+        db.execute("ALTER TABLE prints ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
+    if "quantity_completed" not in columns:
+        db.execute("ALTER TABLE prints ADD COLUMN quantity_completed INTEGER NOT NULL DEFAULT 0")
+    db.commit()
+    
     db.close()
 
 
@@ -142,13 +155,43 @@ def ticket_with_prints(db, ticket_id):
             p["issues"] = json.loads(p["issues_json"])
         p.pop("config_json", None)
         p.pop("issues_json", None)
+    
     ticket["prints"] = prints
     ticket["print_count"] = len(prints)
-    ticket["total_time_minutes"] = sum(p.get("time_minutes") or 0 for p in prints)
-    ticket["total_filament_g"] = sum(p.get("filament_mass_g") or 0 for p in prints)
-    ticket["remaining_prints"] = sum(1 for p in prints if p["status"] != "complete")
-    ticket["remaining_time_minutes"] = sum((p.get("time_minutes") or 0) for p in prints if p["status"] != "complete")
-    ticket["remaining_filament_g"] = sum((p.get("filament_mass_g") or 0) for p in prints if p["status"] != "complete")
+    
+    # Calculate totals accounting for quantities
+    total_time = 0
+    total_filament = 0
+    remaining_copies = 0
+    remaining_time = 0
+    remaining_filament = 0
+    
+    for p in prints:
+        qty = p.get("quantity", 1) or 1
+        qty_completed = p.get("quantity_completed", 0) or 0
+        time = p.get("time_minutes") or 0
+        filament = p.get("filament_mass_g") or 0
+        status = p.get("status", "to_do")
+        
+        # Total is based on all copies in this print
+        total_time += time * qty
+        total_filament += filament * qty
+        
+        # Remaining depends on status
+        if status == "complete":
+            # All copies are complete
+            pass
+        else:
+            # Count remaining copies (not yet completed)
+            remaining_copies += qty - qty_completed
+            remaining_time += time * (qty - qty_completed)
+            remaining_filament += filament * (qty - qty_completed)
+    
+    ticket["total_time_minutes"] = total_time
+    ticket["total_filament_g"] = total_filament
+    ticket["remaining_prints"] = remaining_copies
+    ticket["remaining_time_minutes"] = remaining_time
+    ticket["remaining_filament_g"] = remaining_filament
     return ticket
 
 
@@ -233,7 +276,7 @@ def list_tickets():
     for row in rows:
         t = row_to_dict(row)
         prints = db.execute(
-            "SELECT id, filename, status, time_minutes, filament_mass_g, issues_json, created_at FROM prints WHERE ticket_id=? ORDER BY created_at DESC",
+            "SELECT id, filename, status, time_minutes, filament_mass_g, quantity, quantity_completed, issues_json, created_at FROM prints WHERE ticket_id=? ORDER BY created_at DESC",
             (t["id"],)
         ).fetchall()
         t["prints"] = [
@@ -245,9 +288,28 @@ def list_tickets():
             for p in prints
         ]
         t["print_count"] = len(prints)
-        t["remaining_prints"] = sum(1 for p in prints if p["status"] != "complete")
-        t["remaining_time_minutes"] = sum((p["time_minutes"] or 0) for p in prints if p["status"] != "complete")
-        t["remaining_filament_g"] = sum((p["filament_mass_g"] or 0) for p in prints if p["status"] != "complete")
+        
+        # Calculate remaining accounting for quantities
+        remaining_prints = 0
+        remaining_time = 0
+        remaining_filament = 0
+        for p in prints:
+            qty = p["quantity"] or 1
+            qty_completed = p["quantity_completed"] or 0
+            time = p["time_minutes"] or 0
+            filament = p["filament_mass_g"] or 0
+            status = p["status"]
+            
+            if status != "complete":
+                remaining_copies = qty - qty_completed
+                remaining_prints += remaining_copies
+                remaining_time += time * remaining_copies
+                remaining_filament += filament * remaining_copies
+        
+        t["remaining_prints"] = remaining_prints
+        t["remaining_time_minutes"] = remaining_time
+        t["remaining_filament_g"] = remaining_filament
+        
         issues = set()
         for p in prints:
             if p["issues_json"]:
@@ -502,18 +564,105 @@ def add_print(tid):
 def update_print(pid):
     db = get_db()
     data = request.json or {}
-    allowed = {"status"}
-    updates = {k: v for k, v in data.items() if k in allowed}
-    if not updates:
-        return jsonify({"error": "nothing to update"}), 400
-    updates["updated_at"] = now_iso()
-    set_clause = ", ".join(f"{k}=?" for k in updates)
-    db.execute(f"UPDATE prints SET {set_clause} WHERE id=?", (*updates.values(), pid))
-    db.commit()
-    p = db.execute("SELECT * FROM prints WHERE id=?", (pid,)).fetchone()
+    
+    # Get current print
+    p = row_to_dict(db.execute("SELECT * FROM prints WHERE id=?", (pid,)).fetchone())
     if not p:
         return jsonify({"error": "not found"}), 404
-    return jsonify(row_to_dict(p))
+    
+    new_status = data.get("status", p["status"])
+    new_quantity = data.get("quantity")
+    quantity_completed = data.get("quantity_completed")
+    
+    # Validate quantity updates
+    if new_quantity is not None:
+        new_quantity = int(new_quantity)
+        if new_quantity < 1:
+            return jsonify({"error": "quantity must be >= 1"}), 400
+    
+    # Validate quantity_completed updates
+    if quantity_completed is not None:
+        quantity_completed = int(quantity_completed)
+        if quantity_completed < 0:
+            return jsonify({"error": "quantity_completed must be >= 0"}), 400
+        if quantity_completed > (p.get("quantity", 1) or 1):
+            return jsonify({"error": "quantity_completed cannot exceed quantity"}), 400
+    
+    ts = now_iso()
+    
+    # Build updates
+    updates = {}
+    if new_status != p["status"]:
+        updates["status"] = new_status
+    if new_quantity is not None:
+        updates["quantity"] = new_quantity
+    if quantity_completed is not None:
+        updates["quantity_completed"] = quantity_completed
+    
+    if not updates:
+        return jsonify({"error": "nothing to update"}), 400
+    
+    updates["updated_at"] = ts
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    db.execute(f"UPDATE prints SET {set_clause} WHERE id=?", (*updates.values(), pid))
+    
+    db.commit()
+    
+    # Return updated ticket with all prints
+    p_updated = row_to_dict(db.execute("SELECT * FROM prints WHERE id=?", (pid,)).fetchone())
+    if p_updated:
+        ticket_id = p_updated["ticket_id"]
+        return jsonify(ticket_with_prints(db, ticket_id))
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/api/prints/<int:pid>/increment-completed", methods=["POST"])
+def increment_completed(pid):
+    db = get_db()
+    
+    # Get current print
+    p = row_to_dict(db.execute("SELECT * FROM prints WHERE id=?", (pid,)).fetchone())
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    
+    qty = p.get("quantity", 1) or 1
+    qty_completed = p.get("quantity_completed", 0) or 0
+    
+    if qty_completed >= qty:
+        return jsonify({"error": "already completed all copies"}), 400
+    
+    qty_completed += 1
+    
+    ts = now_iso()
+    db.execute("UPDATE prints SET quantity_completed=?, updated_at=? WHERE id=?", (qty_completed, ts, pid))
+    db.commit()
+    
+    ticket_id = p["ticket_id"]
+    return jsonify(ticket_with_prints(db, ticket_id))
+
+
+@app.route("/api/prints/<int:pid>/decrement-completed", methods=["POST"])
+def decrement_completed(pid):
+    db = get_db()
+    
+    # Get current print
+    p = row_to_dict(db.execute("SELECT * FROM prints WHERE id=?", (pid,)).fetchone())
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    
+    qty_completed = p.get("quantity_completed", 0) or 0
+    
+    if qty_completed <= 0:
+        return jsonify({"error": "no completed copies to decrement"}), 400
+    
+    qty_completed -= 1
+    
+    ts = now_iso()
+    db.execute("UPDATE prints SET quantity_completed=?, updated_at=? WHERE id=?", (qty_completed, ts, pid))
+    db.commit()
+    
+    ticket_id = p["ticket_id"]
+    return jsonify(ticket_with_prints(db, ticket_id))
 
 
 @app.route("/api/prints/<int:pid>", methods=["DELETE"])
@@ -592,10 +741,20 @@ def stats():
     db = get_db()
     tickets = {r[0]: r[1] for r in db.execute(
         "SELECT status, COUNT(*) FROM tickets GROUP BY status").fetchall()}
-    prints = {r[0]: r[1] for r in db.execute(
-        "SELECT status, COUNT(*) FROM prints GROUP BY status").fetchall()}
+    
+    # For print stats, count by status considering quantities
+    print_rows = db.execute(
+        "SELECT status, SUM(COALESCE(quantity, 1)) FROM prints GROUP BY status"
+    ).fetchall()
+    prints = {r[0]: r[1] for r in print_rows}
+    
+    # For totals, calculate time and filament accounting for quantities
     totals = db.execute(
-        "SELECT SUM(time_minutes), SUM(filament_mass_g) FROM prints").fetchone()
+        "SELECT SUM(COALESCE(time_minutes, 0) * COALESCE(quantity, 1)), "
+        "       SUM(COALESCE(filament_mass_g, 0) * COALESCE(quantity, 1)) "
+        "FROM prints"
+    ).fetchone()
+    
     return jsonify({
         "tickets": tickets,
         "prints": prints,
