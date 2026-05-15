@@ -171,7 +171,10 @@ function renderTicketCard(t) {
   const isExpandedCard = expandedTicketCards.has(t.id) ? 'expanded' : '';
   const hasIssues = t.issues && t.issues.length > 0;
   const issueLabel = hasIssues ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
-  const printsDone = t.prints ? t.prints.filter(p => p.status === 'complete').length : 0;
+  const printsDone = t.prints ? t.prints.reduce((sum, p) => {
+    const qty = p.quantity || 1;
+    return sum + (p.status === 'complete' ? qty : (p.quantity_completed || 0));
+  }, 0) : 0;
   const printsTotal = t.print_count || 0;
   const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
   return `
@@ -232,8 +235,11 @@ function toggleTicketDetails(event, ticketId) {
 
 function renderDetail(ticket) {
   const pane = document.getElementById('detailPane');
-  const printsDone = ticket.prints.filter(p => p.status === 'complete').length;
-  const printsTotal = ticket.prints.length;
+  const printsDone = ticket.prints.reduce((sum, p) => {
+    const qty = p.quantity || 1;
+    return sum + (p.status === 'complete' ? qty : (p.quantity_completed || 0));
+  }, 0);
+  const printsTotal = ticket.print_count || ticket.prints.reduce((sum, p) => sum + (p.quantity || 1), 0);
   const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
 
   pane.innerHTML = `
@@ -285,7 +291,7 @@ function renderDetail(ticket) {
 
       <div class="section-head">
         <div class="section-label">Print Files (${printsTotal})</div>
-        <button class="btn btn-sm" onclick="openAddPrintsModal(${ticket.id})">+ Add Files</button>
+        <button class="btn btn-sm" onclick="scanTicketForUpdates(${ticket.id})">🔄 Scan for updates</button>
       </div>
 
       <div class="board">
@@ -567,7 +573,7 @@ async function updatePrintStatus(printId, status) {
 }
 
 async function deleteTicket(id) {
-  if (!confirm('Delete this ticket and all its prints?')) return;
+  if (!confirm('Delete this ticket from the queue? This will not remove the ticket directory from disk.')) return;
   await api(`/tickets/${id}`, { method: 'DELETE' });
   activeTicketId = null;
   document.querySelector('.app').classList.remove('detail-open');
@@ -633,6 +639,35 @@ async function decrementCompleted(printId) {
   renderDetail(ticket);
   await loadStats();
   await loadTickets();
+}
+
+async function scanTicketForUpdates(ticketId) {
+  toast('Scanning for print updates…');
+  try {
+    const res = await api(`/tickets/${ticketId}/scan-for-updates`, { method: 'POST' });
+    const { summary, ticket } = res;
+    
+    if (summary.added.length === 0 && summary.updated.length === 0 && summary.removed.length === 0) {
+      toast('No changes found');
+    } else {
+      const msg = [
+        summary.added.length > 0 && `${summary.added.length} new`,
+        summary.updated.length > 0 && `${summary.updated.length} updated`,
+        summary.removed.length > 0 && `${summary.removed.length} removed`,
+      ].filter(Boolean).join(', ');
+      toast(`Scan complete: ${msg}`);
+    }
+    
+    if (summary.errors && summary.errors.length > 0) {
+      console.warn('Scan errors:', summary.errors);
+    }
+    
+    renderDetail(ticket);
+    await loadStats();
+    await loadTickets();
+  } catch (err) {
+    toast('Scan failed: ' + err.message, 'error');
+  }
 }
 
 // ============================================================
@@ -891,15 +926,15 @@ async function rescanDirectory() {
   const btn = document.getElementById('rescanBtn');
   const original = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = '⏳ Scanning…';
+  btn.innerHTML = '⏳ Scanning for new tickets…';
 
   showModal(`
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">Importing from Directory</div>
+        <div class="modal-title">Scanning for New Tickets</div>
       </div>
       <div class="modal-body">
-        <div id="importProgress">Scanning directory...</div>
+        <div id="importProgress">Scanning for new tickets...</div>
         <div id="importFiles" style="margin-top: 16px;"></div>
       </div>
     </div>

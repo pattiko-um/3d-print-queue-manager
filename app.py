@@ -157,7 +157,7 @@ def ticket_with_prints(db, ticket_id):
         p.pop("issues_json", None)
     
     ticket["prints"] = prints
-    ticket["print_count"] = len(prints)
+    ticket["print_count"] = sum((p.get("quantity", 1) or 1) for p in prints)
     
     # Calculate totals accounting for quantities
     total_time = 0
@@ -284,10 +284,12 @@ def list_tickets():
                 "id": p["id"],
                 "filename": p["filename"],
                 "status": p["status"],
+                "quantity": p["quantity"],
+                "quantity_completed": p["quantity_completed"],
             }
             for p in prints
         ]
-        t["print_count"] = len(prints)
+        t["print_count"] = sum((p["quantity"] or 1) for p in prints)
         
         # Calculate remaining accounting for quantities
         remaining_prints = 0
@@ -388,8 +390,9 @@ def delete_ticket(tid):
 @app.route("/api/import-from-directory", methods=["POST"])
 def import_from_directory():
     """
-    Scan PRINT_ROOT_DIR and create/link tickets with prints.
-    Returns a streaming summary of created/updated tickets.
+    Scan PRINT_ROOT_DIR and create tickets for new directories only.
+    Existing ticket directories are skipped so the scan does not update
+    existing tickets or add prints to already-imported tickets.
     """
     scanned = scan_print_root_directory()
 
@@ -401,13 +404,14 @@ def import_from_directory():
         result = {
             "created_tickets": 0,
             "updated_tickets": 0,
+            "skipped_tickets": 0,
             "added_prints": 0,
             "errors": [],
             "tickets": [],
             "files_processed": [],
         }
 
-        yield emit({"type": "start", "message": "Scanning directories..."})
+        yield emit({"type": "start", "message": "Scanning for new ticket directories..."})
 
         for item in scanned:
             ticket_id = item["ticket_id"]
@@ -418,45 +422,30 @@ def import_from_directory():
             yield emit({"type": "ticket", "ticket_id": ticket_id})
 
             existing = db.execute(
-                "SELECT id, requester FROM tickets WHERE external_ticket_id=?",
+                "SELECT id FROM tickets WHERE external_ticket_id=?",
                 (ticket_id,)
             ).fetchone()
 
             if existing:
-                ticket_row_id = existing["id"]
-                result["updated_tickets"] += 1
-                if not existing["requester"] and username:
-                    db.execute(
-                        "UPDATE tickets SET requester=?, username=?, updated_at=? WHERE id=?",
-                        (username, username, ts, ticket_row_id)
-                    )
-                    db.commit()
-            else:
-                title = f"TDX #{ticket_id} - {username}" if username else f"TDX #{ticket_id}"
-                ticket_url = build_ticket_url(ticket_id)
-                db.execute(
-                    "INSERT INTO tickets (id, title, requester, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (ticket_id, title, username, username, ticket_id, ticket_url, "received", ts, ts)
-                )
-                db.commit()
-                ticket_row_id = ticket_id
-                result["created_tickets"] += 1
+                result["skipped_tickets"] += 1
+                yield emit({"type": "ticket", "ticket_id": ticket_id, "status": "skipped"})
+                continue
+
+            title = f"TDX #{ticket_id} - {username}" if username else f"TDX #{ticket_id}"
+            ticket_url = build_ticket_url(ticket_id)
+            db.execute(
+                "INSERT INTO tickets (id, title, requester, username, external_ticket_id, ticket_url, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (ticket_id, title, username, username, ticket_id, ticket_url, "received", ts, ts)
+            )
+            db.commit()
+            ticket_row_id = ticket_id
+            result["created_tickets"] += 1
 
             for stl_path in stl_files:
                 filename = Path(stl_path).name
                 result["files_processed"].append({"filename": filename, "status": "processing", "path": stl_path, "ticket_id": ticket_id})
                 yield emit({"type": "file", "ticket_id": ticket_id, "filename": filename, "status": "processing"})
-
-                existing_print = db.execute(
-                    "SELECT id FROM prints WHERE ticket_id=? AND filepath=?",
-                    (ticket_row_id, stl_path)
-                ).fetchone()
-
-                if existing_print:
-                    result["files_processed"][-1]["status"] = "skipped"
-                    yield emit({"type": "file", "ticket_id": ticket_id, "filename": filename, "status": "skipped"})
-                    continue
 
                 analysis = scan_and_analyze_stl(stl_path)
                 error = analysis.get("error")
@@ -735,6 +724,132 @@ def open_in_prusaslicer(pid):
 # ---------------------------------------------------------------------------
 # Stats endpoint
 # ---------------------------------------------------------------------------
+
+@app.route("/api/tickets/<int:tid>/scan-for-updates", methods=["POST"])
+def scan_ticket_for_updates(tid):
+    """
+    Scan the ticket's directory for new/updated/deleted print files.
+    - New files: add as prints in "to_do" status
+    - Updated files (mtime changed): rescan and move to "to_do"
+    - Missing files: delete the prints
+    """
+    db = get_db()
+    ticket = row_to_dict(db.execute("SELECT external_ticket_id FROM tickets WHERE id=?", (tid,)).fetchone())
+    if not ticket:
+        return jsonify({"error": "ticket not found"}), 404
+    
+    external_id = ticket.get("external_ticket_id")
+    if not external_id:
+        return jsonify({"error": "ticket has no external ID"}), 400
+    
+    # Find ticket directory
+    import re
+    ticket_dir = None
+    for subdir in Path(PRINT_ROOT_DIR).iterdir():
+        if not subdir.is_dir():
+            continue
+        match = re.match(r"^(\d+)\s*-\s*(.+)$", subdir.name.strip())
+        if match and int(match.group(1)) == external_id:
+            ticket_dir = subdir
+            break
+    
+    if not ticket_dir:
+        return jsonify({"error": "ticket directory not found"}), 404
+    
+    # List files in directory
+    stl_files = sorted([f for f in ticket_dir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf')])
+    disk_files = {f.name: f for f in stl_files}
+    
+    # Get existing prints
+    existing_prints = db.execute(
+        "SELECT id, filename, filepath, status, updated_at FROM prints WHERE ticket_id=?", (tid,)
+    ).fetchall()
+    existing_by_name = {dict(p)["filename"]: dict(p) for p in existing_prints}
+    
+    ts = now_iso()
+    result = {"added": [], "updated": [], "removed": [], "errors": []}
+    
+    # Check for new or updated files
+    for filename, filepath in disk_files.items():
+        if filename in existing_by_name:
+            # File exists in DB - check if it's been modified
+            existing = existing_by_name[filename]
+            db_mtime = existing.get("updated_at")
+            
+            # Check file mtime
+            file_stat = filepath.stat()
+            file_mtime = file_stat.st_mtime
+            db_mtime_ts = datetime.fromisoformat(db_mtime.replace('Z', '+00:00')).timestamp() if db_mtime else 0
+            
+            if file_mtime > db_mtime_ts:
+                # File has been updated - rescan it
+                analysis = scan_and_analyze_stl(str(filepath))
+                error = analysis.get("error")
+                
+                db.execute("""UPDATE prints SET
+                    size_x_mm=?, size_y_mm=?, size_z_mm=?, volume_mm3=?, triangle_count=?,
+                    layer_count=?, filament_length_m=?, filament_mass_g=?,
+                    time_minutes=?, time_formatted=?, config_json=?, issues_json=?, parse_error=?, 
+                    status=?, updated_at=?
+                    WHERE id=?""",
+                    (
+                        analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
+                        analysis.get("volume_mm3"), analysis.get("triangle_count"),
+                        analysis.get("layer_count"), analysis.get("filament_length_m"),
+                        analysis.get("filament_mass_g"), analysis.get("time_minutes"),
+                        analysis.get("time_formatted"),
+                        json.dumps(analysis.get("config")) if analysis.get("config") else None,
+                        json.dumps(analysis.get("issues")) if analysis.get("issues") else None,
+                        error, "to_do", ts, existing["id"],
+                    ),
+                )
+                result["updated"].append(filename)
+                if error:
+                    result["errors"].append({"file": filename, "error": error})
+        else:
+            # New file - add as print
+            analysis = scan_and_analyze_stl(str(filepath))
+            error = analysis.get("error")
+            
+            db.execute(
+                """INSERT INTO prints
+                    (ticket_id, filename, filepath, status,
+                     size_x_mm, size_y_mm, size_z_mm, volume_mm3, triangle_count,
+                     has_overhangs, overhang_area_mm2, support_vol_mm3,
+                     layer_count, filament_length_m, filament_mass_g,
+                     time_minutes, time_formatted, config_json, issues_json, parse_error,
+                     created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    tid, filename, str(filepath), "to_do",
+                    analysis.get("size_x_mm"), analysis.get("size_y_mm"), analysis.get("size_z_mm"),
+                    analysis.get("volume_mm3"), analysis.get("triangle_count"),
+                    analysis.get("has_overhangs"), analysis.get("overhang_area_mm2"), analysis.get("support_vol_mm3"),
+                    analysis.get("layer_count"), analysis.get("filament_length_m"),
+                    analysis.get("filament_mass_g"), analysis.get("time_minutes"),
+                    analysis.get("time_formatted"),
+                    json.dumps(analysis.get("config")) if analysis.get("config") else None,
+                    json.dumps(analysis.get("issues")) if analysis.get("issues") else None,
+                    error,
+                    ts, ts,
+                ),
+            )
+            result["added"].append(filename)
+            if error:
+                result["errors"].append({"file": filename, "error": error})
+    
+    # Check for deleted files
+    for filename, print_data in existing_by_name.items():
+        if filename not in disk_files:
+            db.execute("DELETE FROM prints WHERE id=?", (print_data["id"],))
+            result["removed"].append(filename)
+    
+    db.commit()
+    return jsonify({
+        "summary": result,
+        "ticket": ticket_with_prints(db, tid)
+    })
+
 
 @app.route("/api/stats", methods=["GET"])
 def stats():
