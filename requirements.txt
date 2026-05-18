@@ -1,0 +1,4 @@
+Flask>=2.0
+python-dotenv>=0.21
+# Optional: add numpy if using estimators that require it
+# numpy

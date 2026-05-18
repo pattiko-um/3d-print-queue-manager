@@ -29,7 +29,10 @@ def get_env_path(name):
     return Path(raw)
 
 BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / "printqueue.db"
+# Database directory and path
+DB_DIR = BASE_DIR / "db"
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DB_DIR / "printqueue.db"
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
 PRINT_ROOT_DIR = get_env_path('PRINT_ROOT_DIR')
@@ -38,6 +41,9 @@ PRUSA_SLICER_PATH = str(get_env_path('PRUSA_SLICER_PATH')) if os.getenv('PRUSA_S
 PRINT_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), template_folder=str(TEMPLATES_DIR))
+
+# Use the migration-based initializer in db/init_db.py
+from db.init_db import init_db
 
 # ---------------------------------------------------------------------------
 # Database
@@ -57,100 +63,6 @@ def close_db(exc):
     db = g.pop("db", None)
     if db:
         db.close()
-
-
-def init_db():
-    db = sqlite3.connect(str(DB_PATH))
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id                  INTEGER PRIMARY KEY,
-            title               TEXT NOT NULL,
-            requester           TEXT DEFAULT '',
-            username            TEXT DEFAULT '',
-            external_ticket_id  INTEGER,
-            ticket_url          TEXT,
-            notes               TEXT DEFAULT '',
-            status              TEXT NOT NULL DEFAULT 'received'
-                                CHECK(status IN ('received','awaiting_input','queued','in_process','complete','closed')),
-            priority            INTEGER NOT NULL DEFAULT 0,
-            created_at          TEXT NOT NULL,
-            updated_at          TEXT NOT NULL,
-            closed_at          TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS prints (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_id           INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-            filename            TEXT NOT NULL,
-            filepath            TEXT NOT NULL,
-            status              TEXT NOT NULL DEFAULT 'to_do'
-                                CHECK(status IN ('to_do','awaiting_input','queued','printing','complete')),
-            -- Quantity tracking
-            quantity            INTEGER NOT NULL DEFAULT 1,
-            quantity_completed  INTEGER NOT NULL DEFAULT 0,
-            -- STL geometry
-            size_x_mm           REAL,
-            size_y_mm           REAL,
-            size_z_mm           REAL,
-            volume_mm3          REAL,
-            triangle_count      INTEGER,
-            has_overhangs       INTEGER DEFAULT 0,
-            overhang_area_mm2   REAL,
-            support_vol_mm3     REAL,
-            -- Estimates
-            layer_count         INTEGER,
-            filament_length_m   REAL,
-            filament_mass_g     REAL,
-            time_minutes        REAL,
-            time_formatted      TEXT,
-            -- Config snapshot (JSON)
-            config_json         TEXT,
-            -- Issues (JSON array)
-            issues_json         TEXT,
-            -- Errors
-            parse_error         TEXT,
-            -- Meta
-            created_at          TEXT NOT NULL,
-            updated_at          TEXT NOT NULL
-        );
-    """)
-    db.commit()
-    
-    # Migration: Add quantity columns if they don't exist
-    cursor = db.execute("PRAGMA table_info(prints)")
-    columns = {row[1] for row in cursor.fetchall()}
-    if "quantity" not in columns:
-        db.execute("ALTER TABLE prints ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
-    if "quantity_completed" not in columns:
-        db.execute("ALTER TABLE prints ADD COLUMN quantity_completed INTEGER NOT NULL DEFAULT 0")
-
-    cursor = db.execute("PRAGMA table_info(tickets)")
-    ticket_columns = {row[1] for row in cursor.fetchall()}
-    if "closed_at" not in ticket_columns:
-        db.execute("ALTER TABLE tickets ADD COLUMN closed_at TEXT")
-        if "archived_at" in ticket_columns:
-            db.execute("UPDATE tickets SET closed_at = archived_at WHERE closed_at IS NULL AND archived_at IS NOT NULL")
-    db.commit()
-
-    create_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").fetchone()[0]
-    if "('received','awaiting_input','queued','in_process','complete','closed')" not in create_sql:
-        db.execute("PRAGMA foreign_keys=OFF")
-        db.execute("CREATE TABLE tickets_new (\n            id INTEGER PRIMARY KEY,\n            title TEXT NOT NULL,\n            requester TEXT DEFAULT '',\n            username TEXT DEFAULT '',\n            external_ticket_id INTEGER,\n            ticket_url TEXT,\n            notes TEXT DEFAULT '',\n            status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received','awaiting_input','queued','in_process','complete','closed')),\n            priority INTEGER NOT NULL DEFAULT 0,\n            created_at TEXT NOT NULL,\n            updated_at TEXT NOT NULL,\n            closed_at TEXT\n        )")
-        db.execute("INSERT INTO tickets_new (id, title, requester, username, external_ticket_id, ticket_url, notes, status, priority, created_at, updated_at, closed_at)"
-                   " SELECT id, title, requester, username, external_ticket_id, ticket_url, notes,"
-                   " CASE WHEN status IN ('delivered','archived') THEN 'closed' ELSE status END,"
-                   " priority, created_at, updated_at,"
-                   " CASE WHEN status IN ('delivered','archived') THEN archived_at ELSE closed_at END"
-                   " FROM tickets")
-        db.execute("DROP TABLE tickets")
-        db.execute("ALTER TABLE tickets_new RENAME TO tickets")
-        db.execute("PRAGMA foreign_keys=ON")
-        db.commit()
-    
-    db.close()
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -938,6 +850,6 @@ def stats():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    init_db()
+    init_db(DB_PATH, BASE_DIR)
     print("\n🖨️  PrintQueue running at http://localhost:5000")
     app.run(debug=True, port=5000)
