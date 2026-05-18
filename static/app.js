@@ -6,21 +6,19 @@ let activeTicketId = null;
 let stlFiles = [];
 let dragPrintId = null;
 let dragTicketId = null;
-let showingDeliveredTickets = false;
+let showingClosedTickets = false;
 const expandedPrints = new Set();
-const ticketBoardStatuses = ['received', 'awaiting_input', 'queued', 'in_process', 'complete'];
+const ticketBoardStatuses = ['received', 'awaiting_input', 'in_process', 'complete'];
 const ticketBoardLabels = {
   received: 'Received',
-  awaiting_input: 'Awaiting Input',
-  queued: 'Queued',
-  in_process: 'Printing',
+  awaiting_input: 'Awaiting Filament',
+  in_process: 'In Progress',
   complete: 'Complete'
 };
-const printBoardStatuses = ['to_do', 'awaiting_input', 'queued', 'printing', 'complete'];
+const printBoardStatuses = ['to_do', 'awaiting_input', 'printing', 'complete'];
 const printBoardLabels = {
   to_do: 'To Do',
   awaiting_input: 'Awaiting Input',
-  queued: 'Queued',
   printing: 'Printing',
   complete: 'Complete'
 };
@@ -85,15 +83,17 @@ function renderTicketList() {
     return;
   }
 
-  if (showingDeliveredTickets) {
-    const delivered = tickets.filter(t => (t.status || '') === 'delivered');
+  if (showingClosedTickets) {
+    const closed = tickets
+      .filter(t => (t.status || '') === 'closed')
+      .sort((a, b) => new Date(b.closed_at || b.updated_at || b.created_at) - new Date(a.closed_at || a.updated_at || a.created_at));
     el.innerHTML = `
       <div class="section-head">
-        <div class="section-label">Delivered Tickets</div>
+        <div class="section-label">Closed Tickets</div>
         <button class="btn btn-sm" onclick="showTicketBoard()">Back to board</button>
       </div>
       <div class="ticket-board-delivered">
-        ${delivered.length === 0 ? `<div class="loading" style="padding:20px;text-align:center;color:var(--text3)">No delivered tickets</div>` : delivered.map(renderDeliveredTicketCard).join('')}
+        ${closed.length === 0 ? `<div class="loading" style="padding:20px;text-align:center;color:var(--text3)">No closed tickets</div>` : closed.map(renderClosedTicketCard).join('')}
       </div>
     `;
     return;
@@ -111,17 +111,17 @@ function renderTicketList() {
   `;
 }
 
-function showDeliveredTickets() {
-  showingDeliveredTickets = true;
+function showClosedTickets() {
+  showingClosedTickets = true;
   renderTicketList();
 }
 
 function showTicketBoard() {
-  showingDeliveredTickets = false;
+  showingClosedTickets = false;
   renderTicketList();
 }
 
-function renderDeliveredTicketCard(t) {
+function renderClosedTicketCard(t) {
   const issueLabel = t.issues && t.issues.length ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
   return `
     <div class="board-card ticket-card delivered-card">
@@ -129,11 +129,10 @@ function renderDeliveredTicketCard(t) {
         <div>
           <div class="board-card-title"><a href="${esc(ticketUrl(t))}" target="_blank" class="ticket-card-title">${esc(t.title)}</a></div>
           <div class="board-card-meta">
-            <span style="font-size: 10px; color: var(--text3);">${fmtDate(t.created_at)}</span>
+            <span style="font-size: 10px; color: var(--text3);">Created ${fmtDate(t.created_at)}</span>
           </div>
           <div class="board-card-meta">
-            <span>${t.requester ? esc(t.requester) : 'No requester'}</span>
-            <span>${t.remaining_prints} / ${t.print_count} prints remaining</span>
+            <span>Closed ${fmtDate(t.closed_at)}</span>
           </div>
           <div class="board-card-meta">
             <span class="board-card-pill ${badgeClass(t.status)}">${esc(statusLabel(t.status))}</span>
@@ -253,21 +252,21 @@ function renderDetail(ticket) {
         <div class="detail-meta">
           ${ticket.requester ? `<div class="detail-meta-item">from <strong>${esc(ticket.requester)}</strong></div>` : ''}
           <div class="detail-meta-item">created <strong>${fmtDate(ticket.created_at)}</strong></div>
-          ${ticket.status === 'delivered'
-            ? `<div class="detail-meta-item"><strong>Delivered</strong></div>`
+          ${ticket.status === 'closed'
+            ? `<div class="detail-meta-item"><strong>Closed</strong></div>`
             : `<select class="status-select" onchange="updateTicketStatus(${ticket.id}, this.value)">
                  <option value="received" ${ticket.status==='received'?'selected':''}>Received</option>
-                 <option value="awaiting_input" ${ticket.status==='awaiting_input'?'selected':''}>Awaiting Input</option>
-                 <option value="queued" ${ticket.status==='queued'?'selected':''}>Queued</option>
-                 <option value="in_process" ${ticket.status==='in_process'?'selected':''}>Printing</option>
+                 <option value="awaiting_input" ${ticket.status==='awaiting_input'?'selected':''}>Awaiting Filament</option>
+                 <option value="in_process" ${ticket.status==='in_process'?'selected':''}>In Progress</option>
                  <option value="complete" ${ticket.status==='complete'?'selected':''}>Complete</option>
                </select>`}
         </div>
       </div>
       <div class="detail-actions">
+        <button class="btn btn-sm" onclick="scanTicketForUpdates(${ticket.id})">🔄 Scan for updates</button>
         <button class="btn btn-sm" onclick="openEditTicketModal(${ticket.id})">Edit</button>
         <button class="btn btn-sm btn-ghost btn-danger" onclick="deleteTicket(${ticket.id})">Delete</button>
-        ${ticket.status !== 'delivered' ? `<button class="btn btn-sm btn-primary" onclick="deliverTicket(${ticket.id})">Deliver</button>` : ''}
+        ${ticket.status !== 'closed' ? `<button class="btn btn-sm btn-primary" onclick="closeTicket(${ticket.id})">Close Ticket</button>` : ''}
       </div>
     </div>
     <div class="detail-body">
@@ -287,11 +286,6 @@ function renderDetail(ticket) {
           <div class="summary-val">${ticket.remaining_filament_g.toFixed(1)}g</div>
           <div class="summary-label">Remaining Filament</div>
         </div>
-      </div>
-
-      <div class="section-head">
-        <div class="section-label">Print Files (${printsTotal})</div>
-        <button class="btn btn-sm" onclick="scanTicketForUpdates(${ticket.id})">🔄 Scan for updates</button>
       </div>
 
       <div class="board">
@@ -364,6 +358,15 @@ function renderBoardCard(p) {
   // Quantity badge
   const badgeValue = p.status === 'printing' ? `${qty_completed}/${qty}` : qty;
   const qtyBadge = qty > 1 ? `<div class="quantity-badge">${badgeValue}</div>` : '';
+  const toggleText = expanded ? 'Collapse' : 'Expand';
+  const collapsedActions = !expanded ? `
+    <div class="board-card-collapsed-actions">
+      <div class="board-card-field board-card-field-inline">
+        <span class="board-card-field-label">Qty</span>
+        <input type="number" min="1" value="${qty}" class="form-input" style="width: 60px;" onchange="updatePrintQuantity(${p.id}, this.value)">
+      </div>
+      <button class="btn btn-sm btn-ghost" onclick="openInPrusaSlicer(${p.id})" title="Open in PrusaSlicer">🖨️ Open</button>
+    </div>` : '';
   
   // Completion buttons for printing status
   const completionButtons = p.status === 'printing' && qty > 1 ? `
@@ -383,14 +386,15 @@ function renderBoardCard(p) {
           <div class="board-card-meta">
             <span>⏱ ${totalTimeFmt}</span>
             <span>🧵 ${filamentLabel}</span>
+            <span class="board-card-link" onclick="toggleCardDetails(event, ${p.id})">${toggleText}</span>
           </div>
           <div class="board-card-meta">
             <span>${esc(dimensionLabel)}</span>
           </div>
         </div>
-        <button class="board-card-toggle" onclick="toggleCardDetails(event, ${p.id})">${expanded ? '−' : '+'}</button>
         ${qtyBadge}
       </div>
+      ${collapsedActions}
       ${completionButtons}
       ${issueText ? `<div class="${hasError ? 'board-card-error' : 'board-card-issue'}">⚠ ${esc(issueText)}</div>` : ''}
       <div class="board-card-details">
@@ -625,6 +629,19 @@ async function updatePrintQuantity(printId, quantity) {
   toast('Quantity updated');
 }
 
+async function closeTicket(ticketId) {
+  await api(`/tickets/${ticketId}`, { method: 'PATCH', body: { status: 'closed' } });
+  activeTicketId = null;
+  document.querySelector('.app').classList.remove('detail-open');
+  document.getElementById('detailPane').innerHTML = `
+    <div class="detail-empty">
+      <div class="detail-empty-icon">⬡</div>
+      <p>Select a ticket to view details</p>
+    </div>`;
+  await loadTickets();
+  toast('Ticket closed');
+}
+
 async function incrementCompleted(printId) {
   await api(`/prints/${printId}/increment-completed`, { method: 'POST' });
   const ticket = await api(`/tickets/${activeTicketId}`);
@@ -852,13 +869,12 @@ function badgeClass(status) {
   const map = {
     'received': 'badge badge-received',
     'awaiting_input': 'badge badge-awaiting_input',
-    'queued': 'badge badge-queued',
     'in_process': 'badge badge-in_progress',
     'complete': 'badge badge-done',
+    'closed': 'badge badge-done',
     'delivered': 'badge badge-done',
     'print-to_do': 'badge badge-todo',
     'print-awaiting_input': 'badge badge-awaiting_input',
-    'print-queued': 'badge badge-queued',
     'print-printing': 'badge badge-in_progress',
     'print-complete': 'badge badge-printed',
   };
@@ -868,13 +884,12 @@ function badgeClass(status) {
 function statusLabel(s) {
   return {
     received: 'Received',
-    awaiting_input: 'Awaiting Input',
-    queued: 'Queued',
-    in_process: 'Printing',
+    awaiting_input: 'Awaiting Filament',
+    in_process: 'In Progress',
     complete: 'Complete',
-    delivered: 'Delivered',
+    closed: 'Closed',
+    delivered: 'Closed',
     todo: 'Queued',
-    in_progress: 'Printing',
     done: 'Complete',
   }[s] || s;
 }

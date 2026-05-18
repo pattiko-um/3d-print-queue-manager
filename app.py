@@ -72,10 +72,11 @@ def init_db():
             ticket_url          TEXT,
             notes               TEXT DEFAULT '',
             status              TEXT NOT NULL DEFAULT 'received'
-                                CHECK(status IN ('received','awaiting_input','queued','in_process','complete','delivered')),
+                                CHECK(status IN ('received','awaiting_input','queued','in_process','complete','closed')),
             priority            INTEGER NOT NULL DEFAULT 0,
             created_at          TEXT NOT NULL,
-            updated_at          TEXT NOT NULL
+            updated_at          TEXT NOT NULL,
+            closed_at          TEXT
         );
 
         CREATE TABLE IF NOT EXISTS prints (
@@ -123,7 +124,29 @@ def init_db():
         db.execute("ALTER TABLE prints ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
     if "quantity_completed" not in columns:
         db.execute("ALTER TABLE prints ADD COLUMN quantity_completed INTEGER NOT NULL DEFAULT 0")
+
+    cursor = db.execute("PRAGMA table_info(tickets)")
+    ticket_columns = {row[1] for row in cursor.fetchall()}
+    if "closed_at" not in ticket_columns:
+        db.execute("ALTER TABLE tickets ADD COLUMN closed_at TEXT")
+        if "archived_at" in ticket_columns:
+            db.execute("UPDATE tickets SET closed_at = archived_at WHERE closed_at IS NULL AND archived_at IS NOT NULL")
     db.commit()
+
+    create_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").fetchone()[0]
+    if "('received','awaiting_input','queued','in_process','complete','closed')" not in create_sql:
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("CREATE TABLE tickets_new (\n            id INTEGER PRIMARY KEY,\n            title TEXT NOT NULL,\n            requester TEXT DEFAULT '',\n            username TEXT DEFAULT '',\n            external_ticket_id INTEGER,\n            ticket_url TEXT,\n            notes TEXT DEFAULT '',\n            status TEXT NOT NULL DEFAULT 'received' CHECK(status IN ('received','awaiting_input','queued','in_process','complete','closed')),\n            priority INTEGER NOT NULL DEFAULT 0,\n            created_at TEXT NOT NULL,\n            updated_at TEXT NOT NULL,\n            closed_at TEXT\n        )")
+        db.execute("INSERT INTO tickets_new (id, title, requester, username, external_ticket_id, ticket_url, notes, status, priority, created_at, updated_at, closed_at)"
+                   " SELECT id, title, requester, username, external_ticket_id, ticket_url, notes,"
+                   " CASE WHEN status IN ('delivered','archived') THEN 'closed' ELSE status END,"
+                   " priority, created_at, updated_at,"
+                   " CASE WHEN status IN ('delivered','archived') THEN archived_at ELSE closed_at END"
+                   " FROM tickets")
+        db.execute("DROP TABLE tickets")
+        db.execute("ALTER TABLE tickets_new RENAME TO tickets")
+        db.execute("PRAGMA foreign_keys=ON")
+        db.commit()
     
     db.close()
 
@@ -142,8 +165,20 @@ def row_to_dict(row):
     return dict(row) if row else None
 
 
+def normalize_ticket_status(ticket):
+    if not ticket:
+        return ticket
+    if ticket.get("status") in ("delivered", "archived"):
+        ticket["status"] = "closed"
+    if ticket.get("status") == "closed" and not ticket.get("closed_at"):
+        ticket["closed_at"] = ticket.get("updated_at")
+    if not ticket.get("closed_at") and ticket.get("archived_at"):
+        ticket["closed_at"] = ticket.get("archived_at")
+    return ticket
+
+
 def ticket_with_prints(db, ticket_id):
-    ticket = row_to_dict(db.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
+    ticket = normalize_ticket_status(row_to_dict(db.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()))
     if not ticket:
         return None
     prints = [row_to_dict(r) for r in db.execute(
@@ -274,7 +309,7 @@ def list_tickets():
     rows = db.execute("SELECT * FROM tickets ORDER BY priority DESC, id DESC").fetchall()
     tickets = []
     for row in rows:
-        t = row_to_dict(row)
+        t = normalize_ticket_status(row_to_dict(row))
         prints = db.execute(
             "SELECT id, filename, status, time_minutes, filament_mass_g, quantity, quantity_completed, issues_json, created_at FROM prints WHERE ticket_id=? ORDER BY created_at DESC",
             (t["id"],)
@@ -365,6 +400,22 @@ def update_ticket(tid):
     updates = {k: v for k, v in data.items() if k in allowed}
     if not updates:
         return jsonify({"error": "nothing to update"}), 400
+    # Accept a few frontend status aliases and map them to canonical DB values
+    status_aliases = {
+        "awaiting_filament": "awaiting_input",
+        "in_progress": "in_process",
+        "todo": "queued",
+        "done": "complete",
+    }
+    if updates.get("status") in status_aliases:
+        updates["status"] = status_aliases[updates["status"]]
+
+    if updates.get("status") in ("delivered", "archived"):
+        updates["status"] = "closed"
+    if updates.get("status") == "closed":
+        updates["closed_at"] = now_iso()
+    elif "status" in updates:
+        updates["closed_at"] = None
     updates["updated_at"] = now_iso()
     set_clause = ", ".join(f"{k}=?" for k in updates)
     db.execute(f"UPDATE tickets SET {set_clause} WHERE id=?", (*updates.values(), tid))
@@ -714,8 +765,12 @@ def open_in_prusaslicer(pid):
         return jsonify({"error": "PrusaSlicer path not configured"}), 500
     
     try:
-        # Launch PrusaSlicer with the file
-        subprocess.Popen([PRUSA_SLICER_PATH, filepath])
+        # Launch PrusaSlicer with the file; if a local config.ini exists, load it
+        config_path = str(BASE_DIR / "config.ini")
+        if os.path.exists(config_path):
+            subprocess.Popen([PRUSA_SLICER_PATH, '--load', config_path, filepath])
+        else:
+            subprocess.Popen([PRUSA_SLICER_PATH, filepath])
         return jsonify({"message": "Opened in PrusaSlicer"})
     except Exception as e:
         return jsonify({"error": f"Failed to open PrusaSlicer: {str(e)}"}), 500

@@ -131,7 +131,7 @@ header {
 
 .ticket-board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 16px;
   width: 100%;
 }
@@ -402,7 +402,7 @@ header {
 .board {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(5, minmax(160px, 1fr));
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
   margin-bottom: 24px;
 }
 
@@ -521,6 +521,22 @@ header {
 .board-card-link:hover {
   color: var(--accent2);
   text-decoration: underline;
+}
+
+.board-card-collapsed-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  padding: 10px 0 0;
+  margin-top: 8px;
+}
+
+.board-card-field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .board-card-toggle {
