@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 
 
-def analyze_3mf_with_prusaslicer(filepath, prusaslicer_path="prusaslicer", config_path="./config.ini"):
+def analyze_3mf_with_prusaslicer(filepath, prusaslicer_path="prusaslicer", config_path="./prusa_configs/default.ini"):
     """Use PrusaSlicer CLI to estimate a 3MF model and return a flat result dict."""
     try:
         info = _parse_model_info(filepath, prusaslicer_path)

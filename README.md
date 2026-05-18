@@ -68,7 +68,6 @@ Server runs at `http://localhost:5000`
 ```
 .
 ├── app.py                 # Flask app
-├── config.ini             # PrusaSlicer config
 ├── index.html             # Frontend entry
 ├── requirements.txt       # Python dependencies
 ├── db/
@@ -76,6 +75,8 @@ Server runs at `http://localhost:5000`
 │   ├── printqueue.db      # SQLite database (created on first run)
 │   └── migrations/        # SQL migration files
 │       └── 0001_initial.sql
+├── prusa_configs/
+│   └── default.ini        # PrusaSlicer config
 ├── static/
 │   ├── app.js
 │   └── style.css

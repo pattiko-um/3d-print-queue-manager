@@ -373,7 +373,7 @@ def analyze_stl(filepath):
         return {"error": str(e)}
 
 
-def analyze_stl_with_prusaslicer(filepath, prusaslicer_path="prusaslicer", config_path="./config.ini"):
+def analyze_stl_with_prusaslicer(filepath, prusaslicer_path="prusaslicer", config_path="./prusa_configs/default.ini"):
     print("here")
     """
     Use PrusaSlicer CLI to generate G-code and extract accurate estimates.

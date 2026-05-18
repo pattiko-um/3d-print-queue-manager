@@ -148,14 +148,14 @@ def scan_and_analyze_stl(filepath_str):
         ext = Path(filepath_str).suffix.lower()
         if ext == ".3mf":
             from three_mf_estimator import analyze_3mf_with_prusaslicer
-            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "config.ini"))
+            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "prusa_configs" / "default.ini"))
 
         from stl_estimator import analyze_stl_with_prusaslicer, analyze_stl
         if ext == ".stl":
             return analyze_stl_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH)
         if ext == ".stp":
             from three_mf_estimator import analyze_3mf_with_prusaslicer
-            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "config.ini"))
+            return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "prusa_configs" / "default.ini"))
 
         return {"error": f"Unsupported file type: {ext}"}
     except ImportError as e:
@@ -677,8 +677,8 @@ def open_in_prusaslicer(pid):
         return jsonify({"error": "PrusaSlicer path not configured"}), 500
     
     try:
-        # Launch PrusaSlicer with the file; if a local config.ini exists, load it
-        config_path = str(BASE_DIR / "config.ini")
+        # Launch PrusaSlicer with the file; if a local default.ini config exists, load it
+        config_path = str(BASE_DIR / "prusa_configs" / "default.ini")
         if os.path.exists(config_path):
             subprocess.Popen([PRUSA_SLICER_PATH, '--load', config_path, filepath])
         else:
