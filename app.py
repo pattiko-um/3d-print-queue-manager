@@ -525,6 +525,7 @@ def update_print(pid):
     new_status = data.get("status", p["status"])
     new_quantity = data.get("quantity")
     quantity_completed = data.get("quantity_completed")
+    new_notes = data.get("notes")
     
     # Validate quantity updates
     if new_quantity is not None:
@@ -550,6 +551,8 @@ def update_print(pid):
         updates["quantity"] = new_quantity
     if quantity_completed is not None:
         updates["quantity_completed"] = quantity_completed
+    if new_notes is not None:
+        updates["notes"] = new_notes
     
     if not updates:
         return jsonify({"error": "nothing to update"}), 400

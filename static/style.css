@@ -5,6 +5,7 @@
   --surface3:  #282828;
   --border:    #2e2e2e;
   --border2:   #3a3a3a;
+  --border3:   #888;
   --text:      #e8e8e8;
   --text2:     #999;
   --text3:     #666;
@@ -456,7 +457,7 @@ header {
 
 .board-card {
   background: var(--surface3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border3);
   border-radius: var(--radius);
   padding: 12px 14px;
   cursor: grab;
@@ -575,6 +576,103 @@ header {
   gap: 4px;
   justify-content: center;
   padding: 4px 0;
+}
+
+.print-notes-section {
+  padding: 8px 0;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  margin: 8px 0;
+}
+
+.print-notes-text {
+  display: block;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  transition: background 0.2s;
+}
+
+.print-notes-text:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.print-notes-empty {
+  font-style: italic;
+  color: var(--text3);
+}
+
+.print-notes-textarea {
+  display: block;
+  width: 100%;
+  min-height: 60px;
+  padding: 8px;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.print-notes-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255,107,53,0.1);
+}
+
+.ticket-notes-section {
+  padding: 8px 0;
+  margin: 6px 0;
+}
+
+.ticket-notes-text {
+  display: block;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 6px;
+  border: 1px solid var(--border3);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  transition: background 0.2s;
+}
+
+.ticket-notes-text:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.ticket-notes-empty {
+  font-style: italic;
+  color: var(--text3);
+}
+
+.ticket-notes-textarea {
+  display: block;
+  width: 100%;
+  min-height: 50px;
+  padding: 6px;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.ticket-notes-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255,107,53,0.1);
 }
 
 .board-card-details {
@@ -1024,15 +1122,52 @@ header {
 /* ---- Notes ---- */
 .notes-block {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent);
   border-radius: var(--radius);
   padding: 12px 14px;
   font-size: 13px;
-  color: var(--text2);
+  color: var(--text);
   margin-bottom: 20px;
   white-space: pre-wrap;
   font-style: italic;
   line-height: 1.6;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.notes-block:hover {
+  background: var(--surface2);
+  border-color: var(--accent2);
+}
+
+.notes-block-empty {
+  color: var(--text3);
+  border-color: var(--border2);
+}
+
+.notes-block-empty:hover {
+  border-color: var(--accent);
+}
+
+.detail-notes-textarea {
+  display: block;
+  width: 100%;
+  min-height: 100px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  resize: vertical;
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+
+.detail-notes-textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255,107,53,0.2);
 }
 
 /* ---- Misc ---- */

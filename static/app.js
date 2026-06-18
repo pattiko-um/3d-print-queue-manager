@@ -176,6 +176,10 @@ function renderTicketCard(t) {
   }, 0) : 0;
   const printsTotal = t.print_count || 0;
   const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
+  
+  // Notes section
+  const notesHtml = t.notes ? `<span class="ticket-notes-text" onclick="editTicketNotes(event, ${t.id})" title="Click to edit">${esc(t.notes)}</span>` : `<span class="ticket-notes-text ticket-notes-empty" onclick="editTicketNotes(event, ${t.id})" title="Click to add notes">Add notes…</span>`;
+  
   return `
     <div class="board-card ticket-card ${isActive} ${isExpandedCard}"
          id="ticket-board-card-${t.id}"
@@ -196,6 +200,7 @@ function renderTicketCard(t) {
           <span>⏱ ${formatTime(t.remaining_time_minutes)}</span>
           <span>🧵 ${t.remaining_filament_g.toFixed(0)}g</span>
         </div>
+        <div class="ticket-notes-section">${notesHtml}</div>
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
       ${issueLabel}
@@ -270,7 +275,7 @@ function renderDetail(ticket) {
       </div>
     </div>
     <div class="detail-body">
-      ${ticket.notes ? `<div class="notes-block">${esc(ticket.notes)}</div>` : ''}
+      ${ticket.notes ? `<div class="notes-block" onclick="editDetailTicketNotes(event, ${ticket.id})" title="Click to edit">${esc(ticket.notes)}</div>` : `<div class="notes-block notes-block-empty" onclick="editDetailTicketNotes(event, ${ticket.id})" title="Click to add notes">Add notes…</div>`}
 
       <div class="summary-bar">
         <div class="summary-cell">
@@ -375,6 +380,9 @@ function renderBoardCard(p) {
       <button class="btn btn-sm btn-ghost" onclick="decrementCompleted(${p.id})" title="Unmark one completed" ${qty_completed <= 0 ? 'disabled' : ''}>-1</button>
     </div>
   ` : '';
+  
+  // Notes section
+  const notesHtml = p.notes ? `<span class="print-notes-text" onclick="editPrintNotes(event, ${p.id})" title="Click to edit">${esc(p.notes)}</span>` : `<span class="print-notes-text print-notes-empty" onclick="editPrintNotes(event, ${p.id})" title="Click to add notes">Add notes…</span>`;
 
   return `
     <div class="board-card ${expanded}" id="board-card-${p.id}"
@@ -396,6 +404,7 @@ function renderBoardCard(p) {
       </div>
       ${collapsedActions}
       ${completionButtons}
+      <div class="print-notes-section">${notesHtml}</div>
       ${issueText ? `<div class="${hasError ? 'board-card-error' : 'board-card-issue'}">⚠ ${esc(issueText)}</div>` : ''}
       <div class="board-card-details">
         <div class="board-card-row">
@@ -656,6 +665,106 @@ async function decrementCompleted(printId) {
   renderDetail(ticket);
   await loadStats();
   await loadTickets();
+}
+
+function editPrintNotes(event, printId) {
+  event.stopPropagation();
+  const section = document.querySelector(`#board-card-${printId} .print-notes-section`);
+  if (!section) return;
+  
+  const currentNotes = section.textContent.trim();
+  const isEmpty = section.querySelector('.print-notes-empty') !== null;
+  const notesText = isEmpty ? '' : currentNotes;
+  
+  section.innerHTML = `
+    <textarea class="print-notes-textarea" id="notes-textarea-${printId}" autofocus>${esc(notesText)}</textarea>
+  `;
+  
+  const textarea = document.getElementById(`notes-textarea-${printId}`);
+  textarea.focus();
+  textarea.select();
+  
+  async function savePrintNotes() {
+    const newNotes = textarea.value.trim();
+    await api(`/prints/${printId}`, { method: 'PATCH', body: { notes: newNotes } });
+    const ticket = await api(`/tickets/${activeTicketId}`);
+    renderDetail(ticket);
+  }
+  
+  textarea.addEventListener('blur', savePrintNotes);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      savePrintNotes();
+    }
+  });
+}
+
+function editTicketNotes(event, ticketId) {
+  event.stopPropagation();
+  const section = document.querySelector(`#ticket-board-card-${ticketId} .ticket-notes-section`);
+  if (!section) return;
+  
+  const currentNotes = section.textContent.trim();
+  const isEmpty = section.querySelector('.ticket-notes-empty') !== null;
+  const notesText = isEmpty ? '' : currentNotes;
+  
+  section.innerHTML = `
+    <textarea class="ticket-notes-textarea" id="ticket-notes-textarea-${ticketId}" autofocus>${esc(notesText)}</textarea>
+  `;
+  
+  const textarea = document.getElementById(`ticket-notes-textarea-${ticketId}`);
+  textarea.focus();
+  textarea.select();
+  
+  async function saveTicketNotes() {
+    const newNotes = textarea.value.trim();
+    await api(`/tickets/${ticketId}`, { method: 'PATCH', body: { notes: newNotes } });
+    await loadTickets();
+    if (activeTicketId === ticketId) {
+      const t = await api(`/tickets/${ticketId}`);
+      renderDetail(t);
+    }
+  }
+  
+  textarea.addEventListener('blur', saveTicketNotes);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      saveTicketNotes();
+    }
+  });
+}
+
+function editDetailTicketNotes(event, ticketId) {
+  event.stopPropagation();
+  const block = document.querySelector('#detailPane .notes-block');
+  if (!block) return;
+  
+  const currentNotes = block.textContent.trim();
+  const isEmpty = block.classList.contains('notes-block-empty');
+  const notesText = isEmpty ? '' : currentNotes;
+  
+  block.innerHTML = `
+    <textarea class="detail-notes-textarea" id="detail-notes-textarea-${ticketId}" autofocus>${esc(notesText)}</textarea>
+  `;
+  
+  const textarea = document.getElementById(`detail-notes-textarea-${ticketId}`);
+  textarea.focus();
+  textarea.select();
+  
+  async function saveDetailTicketNotes() {
+    const newNotes = textarea.value.trim();
+    await api(`/tickets/${ticketId}`, { method: 'PATCH', body: { notes: newNotes } });
+    const t = await api(`/tickets/${ticketId}`);
+    renderDetail(t);
+    await loadTickets();
+  }
+  
+  textarea.addEventListener('blur', saveDetailTicketNotes);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      saveDetailTicketNotes();
+    }
+  });
 }
 
 async function scanTicketForUpdates(ticketId) {
