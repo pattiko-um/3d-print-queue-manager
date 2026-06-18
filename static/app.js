@@ -170,12 +170,30 @@ function renderTicketCard(t) {
   const isExpandedCard = expandedTicketCards.has(t.id) ? 'expanded' : '';
   const hasIssues = t.issues && t.issues.length > 0;
   const issueLabel = hasIssues ? `<span class="board-card-issue">⚠ ${esc(t.issues.join(', '))}</span>` : '';
-  const printsDone = t.prints ? t.prints.reduce((sum, p) => {
-    const qty = p.quantity || 1;
-    return sum + (p.status === 'complete' ? qty : (p.quantity_completed || 0));
-  }, 0) : 0;
-  const printsTotal = t.print_count || 0;
-  const pct = printsTotal > 0 ? Math.round(printsDone / printsTotal * 100) : 0;
+  
+  // Calculate print status counts (accounting for quantity)
+  const statusCounts = {
+    to_do: 0,
+    awaiting_input: 0,
+    printing: 0,
+    complete: 0
+  };
+  
+  if (t.prints) {
+    t.prints.forEach(p => {
+      const qty = p.quantity || 1;
+      const status = p.status || 'to_do';
+      if (status === 'complete') {
+        statusCounts['complete'] += qty;
+      } else if (status === 'printing') {
+        statusCounts['printing'] += qty;
+      } else if (status === 'awaiting_input') {
+        statusCounts['awaiting_input'] += qty;
+      } else {
+        statusCounts['to_do'] += qty;
+      }
+    });
+  }
   
   // Notes section
   const notesHtml = t.notes ? `<span class="ticket-notes-text" onclick="editTicketNotes(event, ${t.id})" title="Click to edit">${esc(t.notes)}</span>` : `<span class="ticket-notes-text ticket-notes-empty" onclick="editTicketNotes(event, ${t.id})" title="Click to add notes">Add notes…</span>`;
@@ -190,8 +208,8 @@ function renderTicketCard(t) {
       </div>
       <div class="board-card-summary">
         <div class="board-card-meta">
+          <span style="font-size: 11px; color: var(--text2);">${fmtDate(t.created_at)}</span> | 
           <span>${t.requester ? esc(t.requester) : 'No requester'}</span> | 
-          <span style="font-size: 10px; color: var(--text3);">${fmtDate(t.created_at)}</span> | 
           <span onclick="toggleTicketDetails(event, ${t.id})" class="board-card-link">${expandedTicketCards.has(t.id) ? 'Collapse' : 'Expand'}</span>
         </div>
         <div class="board-card-meta">
@@ -201,7 +219,24 @@ function renderTicketCard(t) {
           <span>🧵 ${t.remaining_filament_g.toFixed(0)}g</span>
         </div>
         <div class="ticket-notes-section">${notesHtml}</div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div class="print-status-grid">
+          <div class="print-status-block status-to_do">
+            <div class="status-count">${statusCounts['to_do']}</div>
+            <div class="status-label">To Do</div>
+          </div>
+          <div class="print-status-block status-awaiting_input">
+            <div class="status-count">${statusCounts['awaiting_input']}</div>
+            <div class="status-label">Awaiting</div>
+          </div>
+          <div class="print-status-block status-printing">
+            <div class="status-count">${statusCounts['printing']}</div>
+            <div class="status-label">Printing</div>
+          </div>
+          <div class="print-status-block status-complete">
+            <div class="status-count">${statusCounts['complete']}</div>
+            <div class="status-label">Done</div>
+          </div>
+        </div>
       </div>
       ${issueLabel}
       <div class="board-card-details">
@@ -313,7 +348,7 @@ function renderBoardColumns(prints) {
 
   // Sort prints within each status by updated_at (newest first)
   Object.keys(groups).forEach(status => {
-    groups[status].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    groups[status].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   });
 
   return printBoardStatuses.map(status => renderBoardColumn(status, groups[status])).join('');

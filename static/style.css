@@ -463,7 +463,6 @@ header {
   cursor: grab;
   display: flex;
   flex-direction: column;
-  gap: 10px;
   transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -673,6 +672,81 @@ header {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(255,107,53,0.1);
+}
+
+.print-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.print-status-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 6px;
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: all 0.2s;
+}
+
+.print-status-block:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.2);
+}
+
+.status-count {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+}
+
+.status-label {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.status-to_do {
+  background: rgba(255,107,53,0.1);
+  border-color: rgba(255,107,53,0.3);
+}
+
+.status-to_do .status-count {
+  color: var(--accent);
+}
+
+.status-awaiting_input {
+  background: rgba(245,200,66,0.1);
+  border-color: rgba(245,200,66,0.3);
+}
+
+.status-awaiting_input .status-count {
+  color: var(--yellow);
+}
+
+.status-printing {
+  background: rgba(76,174,157,0.1);
+  border-color: rgba(76,174,157,0.3);
+}
+
+.status-printing .status-count {
+  color: var(--green);
+}
+
+.status-complete {
+  background: rgba(74,158,255,0.1);
+  border-color: rgba(74,158,255,0.3);
+}
+
+.status-complete .status-count {
+  color: var(--blue);
 }
 
 .board-card-details {
