@@ -156,6 +156,9 @@ def scan_and_analyze_stl(filepath_str):
         if ext == ".stp":
             from estimators.three_mf_estimator import analyze_3mf_with_prusaslicer
             return analyze_3mf_with_prusaslicer(filepath_str, PRUSA_SLICER_PATH, str(BASE_DIR / "prusa_configs" / "default.ini"))
+        if ext == ".bgcode":
+            from estimators.bgcode_estimator import parse_bgcode
+            return parse_bgcode(filepath_str)
 
         return {"error": f"Unsupported file type: {ext}"}
     except ImportError as e:
@@ -193,14 +196,14 @@ def scan_print_root_directory():
         username = match.group(2).strip()
         
         # Find all STL, STP, and 3MF files in this subdirectory
-        stl_files = sorted([f for f in subdir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf')])
+        files = sorted([f for f in subdir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf', '.bgcode')])
         
-        if stl_files:
+        if files:
             results.append({
                 "ticket_id": ticket_id,
                 "username": username,
                 "directory": str(subdir),
-                "stl_files": [str(f) for f in stl_files],
+                "stl_files": [str(f) for f in files],
             })
     
     return results
@@ -727,7 +730,7 @@ def scan_ticket_for_updates(tid):
         return jsonify({"error": "ticket directory not found"}), 404
     
     # List files in directory
-    stl_files = sorted([f for f in ticket_dir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf')])
+    stl_files = sorted([f for f in ticket_dir.glob("*") if f.is_file() and f.suffix.lower() in ('.stl', '.stp', '.3mf', 'bgcode')])
     disk_files = {f.name: f for f in stl_files}
     
     # Get existing prints
